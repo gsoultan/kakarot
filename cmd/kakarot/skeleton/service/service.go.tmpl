@@ -1,0 +1,41 @@
+// Package service is the API of [[.Name]]. kakarot gen reads it and writes
+// the endpoint and transport layers.
+package service
+
+import (
+	"context"
+
+	"github.com/gsoultan/kakarot"
+	"[[.Module]]/domain"
+)
+
+//go:generate go tool kakarot gen
+
+// NoteService is the contract endpoints and routes are generated from.
+//
+//kakarot:service note
+type NoteService interface {
+	//kakarot:http POST /notes
+	CreateNote(ctx context.Context, in domain.CreateNote) (domain.Note, error)
+	//kakarot:http GET /notes/{id}
+	GetNote(ctx context.Context, in domain.GetNote) (domain.Note, error)
+}
+
+// Usecases groups what the service composes.
+type Usecases struct {
+	Create kakarot.Usecase[domain.CreateNote, domain.Note]
+	Get    kakarot.Usecase[domain.GetNote, domain.Note]
+}
+
+type noteService struct{ uc Usecases }
+
+// New returns the note service.
+func New(uc Usecases) NoteService { return &noteService{uc: uc} }
+
+func (s *noteService) CreateNote(ctx context.Context, in domain.CreateNote) (domain.Note, error) {
+	return s.uc.Create.Execute(ctx, in)
+}
+
+func (s *noteService) GetNote(ctx context.Context, in domain.GetNote) (domain.Note, error) {
+	return s.uc.Get.Execute(ctx, in)
+}

@@ -76,7 +76,7 @@ func newServer(t *testing.T) (http.Handler, *noTx) {
 	})
 	r := httpx.NewRouter()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	transport.RegisterHTTP(r, endpoint.Make(svc), middleware.Default(log, time.Second))
+	transport.RegisterOrderHTTP(r, endpoint.MakeOrderEndpoints(svc), middleware.Default(log, time.Second))
 	return r, tx
 }
 

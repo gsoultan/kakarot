@@ -1,0 +1,36 @@
+// Package domain holds the DTOs every layer above data speaks.
+package domain
+
+import (
+	"strings"
+	"time"
+
+	"github.com/gsoultan/kakarot"
+)
+
+// Note is the domain type returned to callers.
+type Note struct {
+	ID        string    `json:"id"`
+	Title     string    `json:"title"`
+	Body      string    `json:"body"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// CreateNote is the request to create a note.
+type CreateNote struct {
+	Title string `json:"title"`
+	Body  string `json:"body"`
+}
+
+// Validate runs before the service; the endpoint layer wraps it automatically.
+func (c CreateNote) Validate() error {
+	if strings.TrimSpace(c.Title) == "" {
+		return kakarot.Invalid("invalid note", map[string]string{"title": "required"})
+	}
+	return nil
+}
+
+// GetNote reads one note by id.
+type GetNote struct {
+	ID string `path:"id"`
+}

@@ -1,0 +1,32 @@
+// Package usecase holds the business rules and the ports they depend on.
+package usecase
+
+import (
+	"context"
+
+	"[[.Module]]/domain"
+)
+
+// NoteRepository is the port the data layer implements.
+type NoteRepository interface {
+	Create(ctx context.Context, n *domain.Note) error
+	Get(ctx context.Context, id string) (domain.Note, error)
+}
+
+// CreateNote stores a new note.
+type CreateNote struct{ Notes NoteRepository }
+
+func (u *CreateNote) Execute(ctx context.Context, in domain.CreateNote) (domain.Note, error) {
+	n := domain.Note{Title: in.Title, Body: in.Body}
+	if err := u.Notes.Create(ctx, &n); err != nil {
+		return domain.Note{}, err
+	}
+	return n, nil
+}
+
+// GetNote loads a note.
+type GetNote struct{ Notes NoteRepository }
+
+func (u *GetNote) Execute(ctx context.Context, in domain.GetNote) (domain.Note, error) {
+	return u.Notes.Get(ctx, in.ID)
+}

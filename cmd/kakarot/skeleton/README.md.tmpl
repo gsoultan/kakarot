@@ -1,0 +1,14 @@
+# [[.Name]]
+
+A kakarot service. Layers, outside in:
+
+| Package     | Layer                                            | Written by |
+|-------------|--------------------------------------------------|------------|
+| transport/  | HTTP routes (`http_gen.go`)                      | kakarot gen |
+| endpoint/   | typed endpoints (`endpoints_gen.go`)             | kakarot gen |
+| service/    | the API; annotate it with `//kakarot:` comments  | you |
+| usecase/    | business rules, ports (repository interfaces)    | you |
+| domain/     | DTOs and validation                              | you |
+| data/       | storm repositories; `data/model` are DB types    | you + storm generate |
+
+After changing `service/service.go` or `data/model`, run `go generate ./...`.

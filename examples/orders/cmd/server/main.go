@@ -57,7 +57,7 @@ func run(ctx context.Context) error {
 		}
 	}
 
-	// Wiring by hand; `kakarot gen` will generate this in milestone 2.
+	// Wiring stays explicit Go; kakarot gen writes the endpoint and transport layers.
 	repo := &data.OrderRepo{DB: db}
 	svc := service.New(service.Usecases{
 		Place:  &usecase.PlaceOrder{Orders: repo, Events: &data.Events{DB: db}, Tx: kdata.NewTxManager(db)},
@@ -74,7 +74,7 @@ func run(ctx context.Context) error {
 
 	r := httpx.NewRouter()
 	r.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
-	transport.RegisterHTTP(r, endpoint.Make(svc), middleware.Default(log, 5*time.Second))
+	transport.RegisterOrderHTTP(r, endpoint.MakeOrderEndpoints(svc), middleware.Default(log, 5*time.Second))
 	r.ServeOpenAPI("GET /openapi.json", httpx.Info{Title: "orders", Version: "0.1.0"})
 
 	app := &kakarot.App{

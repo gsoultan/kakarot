@@ -10,11 +10,19 @@ import (
 	"github.com/gsoultan/kakarot/examples/orders/domain"
 )
 
-// OrderService is the contract endpoints are generated from.
+//go:generate go tool kakarot gen
+
+// OrderService is the contract endpoints and routes are generated from.
+//
+//kakarot:service order
 type OrderService interface {
+	//kakarot:http POST /orders
 	PlaceOrder(ctx context.Context, in domain.PlaceOrder) (domain.Order, error)
+	//kakarot:http GET /orders/{id}
 	GetOrder(ctx context.Context, in domain.GetOrder) (domain.Order, error)
+	//kakarot:http GET /orders
 	ListOrders(ctx context.Context, in domain.ListOrders) (kakarot.Page[domain.Order], error)
+	//kakarot:http GET /orders/export
 	ExportOrders(ctx context.Context, in domain.ExportOrders) iter.Seq2[domain.Order, error]
 }
 

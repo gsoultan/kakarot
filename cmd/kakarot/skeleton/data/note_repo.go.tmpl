@@ -1,0 +1,49 @@
+// Package data implements the repositories with storm.
+package data
+
+import (
+	"context"
+
+	"github.com/google/uuid"
+
+	"github.com/gsoultan/kakarot"
+	kdata "github.com/gsoultan/kakarot/data"
+	"[[.Module]]/data/store/note"
+	"[[.Module]]/domain"
+	"[[.Module]]/usecase"
+	"github.com/gsoultan/storm"
+)
+
+// NoteRepo stores notes through storm.
+type NoteRepo struct{ DB storm.DB }
+
+var _ usecase.NoteRepository = (*NoteRepo)(nil)
+
+func (r *NoteRepo) Create(ctx context.Context, n *domain.Note) error {
+	c := note.Create()
+	c.SetTitle(n.Title)
+	c.SetBody(n.Body)
+	row, err := c.Insert(ctx, kdata.Executor(ctx, r.DB))
+	if err != nil {
+		return kdata.MapErr(err)
+	}
+	n.ID = uuid.UUID(row.ID).String()
+	n.CreatedAt = row.CreatedAt
+	return nil
+}
+
+func (r *NoteRepo) Get(ctx context.Context, id string) (domain.Note, error) {
+	key, err := uuid.Parse(id)
+	if err != nil {
+		return domain.Note{}, kakarot.NotFound("note", id)
+	}
+	rows, err := note.New().Where(note.ID.Eq(key)).Limit(1).List(ctx, kdata.Executor(ctx, r.DB))
+	if err != nil {
+		return domain.Note{}, kdata.MapErr(err)
+	}
+	if len(rows) == 0 {
+		return domain.Note{}, kakarot.NotFound("note", id)
+	}
+	row := rows[0]
+	return domain.Note{ID: uuid.UUID(row.ID).String(), Title: row.Title, Body: row.Body, CreatedAt: row.CreatedAt}, nil
+}

@@ -1,0 +1,68 @@
+// Command server runs [[.Name]].
+//
+//	STORM_DSN=postgres://localhost/[[.Name]] AUTO_MIGRATE=1 go run ./cmd/server
+package main
+
+import (
+	"context"
+	"log/slog"
+	"os"
+	"time"
+
+	"github.com/gsoultan/kakarot"
+	"github.com/gsoultan/kakarot/middleware"
+	"github.com/gsoultan/kakarot/transport/httpx"
+	"github.com/gsoultan/storm"
+	"github.com/gsoultan/storm/migrate"
+	"github.com/gsoultan/storm/runtime/pgxdrv"
+
+	"[[.Module]]/data"
+	"[[.Module]]/data/model"
+	"[[.Module]]/endpoint"
+	"[[.Module]]/service"
+	"[[.Module]]/transport"
+	"[[.Module]]/usecase"
+)
+
+func main() {
+	if err := run(context.Background()); err != nil {
+		slog.Error("server stopped", "err", err)
+		os.Exit(1)
+	}
+}
+
+func run(ctx context.Context) error {
+	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	pool, err := pgxdrv.NewPool(ctx, os.Getenv("STORM_DSN"))
+	if err != nil {
+		return err
+	}
+	db := pgxdrv.Pool{P: pool}
+	if os.Getenv("AUTO_MIGRATE") == "1" {
+		s, err := storm.Build(&model.Note{})
+		if err != nil {
+			return err
+		}
+		if _, err := migrate.AutoPool(ctx, pool, s, migrate.AutoOptions{}); err != nil {
+			return err
+		}
+	}
+
+	repo := &data.NoteRepo{DB: db}
+	svc := service.New(service.Usecases{
+		Create: &usecase.CreateNote{Notes: repo},
+		Get:    &usecase.GetNote{Notes: repo},
+	})
+
+	r := httpx.NewRouter()
+	transport.RegisterNoteHTTP(r, endpoint.MakeNoteEndpoints(svc), middleware.Default(log, 5*time.Second))
+	r.ServeOpenAPI("GET /openapi.json", httpx.Info{Title: "[[.Name]]", Version: "0.1.0"})
+
+	app := &kakarot.App{
+		Name:    "[[.Name]]",
+		Logger:  log,
+		Servers: []kakarot.Server{httpx.NewServer(":8080", r)},
+		OnStop:  []func(context.Context) error{func(context.Context) error { pool.Close(); return nil }},
+	}
+	return app.Run(ctx)
+}
