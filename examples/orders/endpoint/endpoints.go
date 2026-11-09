@@ -1,7 +1,4 @@
 // Package endpoint turns OrderService methods into typed endpoints.
-//
-// Written by hand in milestone 1; `kakarot gen` will generate this file from
-// the OrderService interface in milestone 2.
 package endpoint
 
 import (
@@ -11,17 +8,21 @@ import (
 	"github.com/gsoultan/kakarot/middleware"
 )
 
-// Endpoints holds one typed endpoint per service method.
+// Endpoints holds one typed endpoint or stream per service method.
 type Endpoints struct {
-	PlaceOrder kakarot.Endpoint[domain.PlaceOrder, domain.Order]
-	GetOrder   kakarot.Endpoint[domain.GetOrder, domain.Order]
+	PlaceOrder   kakarot.Endpoint[domain.PlaceOrder, domain.Order]
+	GetOrder     kakarot.Endpoint[domain.GetOrder, domain.Order]
+	ListOrders   kakarot.Endpoint[domain.ListOrders, kakarot.Page[domain.Order]]
+	ExportOrders kakarot.ServerStream[domain.ExportOrders, domain.Order]
 }
 
 // Make builds the endpoints. A method value already has the Endpoint shape.
-// Validated only compiles because domain.PlaceOrder has a Validate method.
+// Validated only compiles for requests with a Validate method.
 func Make(svc service.OrderService) Endpoints {
 	return Endpoints{
-		PlaceOrder: middleware.Validated(svc.PlaceOrder),
-		GetOrder:   svc.GetOrder,
+		PlaceOrder:   middleware.Validated(svc.PlaceOrder),
+		GetOrder:     svc.GetOrder,
+		ListOrders:   middleware.Validated(svc.ListOrders),
+		ExportOrders: svc.ExportOrders,
 	}
 }

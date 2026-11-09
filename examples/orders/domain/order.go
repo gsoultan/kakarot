@@ -61,6 +61,25 @@ func (p PlaceOrder) Validate() error {
 	return nil
 }
 
+// ListOrders pages through one customer's orders, oldest first.
+type ListOrders struct {
+	CustomerID string `query:"customer_id"`
+	kakarot.PageRequest
+}
+
+// Validate implements middleware.Validatable.
+func (l ListOrders) Validate() error {
+	if l.CustomerID == "" {
+		return kakarot.Invalid("customer_id is required", map[string]string{"customer_id": "required"})
+	}
+	return nil
+}
+
+// ExportOrders streams every order of a customer.
+type ExportOrders struct {
+	CustomerID string `query:"customer_id"`
+}
+
 // GetOrder is the input to read one order.
 type GetOrder struct {
 	ID string `path:"id"`

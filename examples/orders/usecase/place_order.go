@@ -10,6 +10,7 @@ import (
 // PlaceOrder creates an order and its items in one transaction.
 type PlaceOrder struct {
 	Orders OrderRepository
+	Events Events
 	Tx     kakarot.TxManager
 }
 
@@ -22,7 +23,11 @@ func (u *PlaceOrder) Execute(ctx context.Context, in domain.PlaceOrder) (domain.
 		Items:      in.Items,
 	}
 	err := u.Tx.Within(ctx, func(ctx context.Context) error {
-		return u.Orders.Create(ctx, &o)
+		if err := u.Orders.Create(ctx, &o); err != nil {
+			return err
+		}
+		return u.Events.OrderPlaced(ctx, o) // same transaction
+
 	})
 	return o, err
 }

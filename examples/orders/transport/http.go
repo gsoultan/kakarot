@@ -13,4 +13,6 @@ func RegisterHTTP(r *httpx.Router, eps endpoint.Endpoints, mws ...kakarot.Middle
 	g := r.Group("order", mws...)
 	g.Handle("POST /orders", eps.PlaceOrder, httpx.Name("PlaceOrder"))
 	g.Handle("GET /orders/{id}", eps.GetOrder, httpx.Name("GetOrder"))
+	g.Handle("GET /orders", eps.ListOrders, httpx.Name("ListOrders"))
+	g.Stream("GET /orders/export", eps.ExportOrders, httpx.Name("ExportOrders"))
 }

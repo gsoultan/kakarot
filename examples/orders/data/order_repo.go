@@ -5,6 +5,7 @@ package data
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -65,6 +66,35 @@ func (r *OrderRepo) Get(ctx context.Context, id string) (domain.Order, error) {
 		return domain.Order{}, kakarot.NotFound("order", id)
 	}
 	return toDomain(rows[0]), nil
+}
+
+type orderCursor struct {
+	CreatedAt time.Time `json:"t"`
+	ID        uuid.UUID `json:"id"`
+}
+
+// ListByCustomer pages through a customer's orders with a keyset cursor on
+// (created_at, id), using storm's After.
+func (r *OrderRepo) ListByCustomer(ctx context.Context, customerID, cursor string, limit int) (kakarot.Page[domain.Order], error) {
+	q := order.New().
+		Where(order.CustomerID.Eq(customerID)).
+		Order(order.CreatedAt.Asc(), order.ID.Asc()).
+		Limit(int64(limit + 1))
+	c, ok, err := kakarot.DecodeCursor[orderCursor](cursor)
+	if err != nil {
+		return kakarot.Page[domain.Order]{}, err
+	}
+	if ok {
+		q = q.After(order.Row{CreatedAt: c.CreatedAt, ID: c.ID})
+	}
+	rows, err := q.List(ctx, kdata.Executor(ctx, r.DB))
+	if err != nil {
+		return kakarot.Page[domain.Order]{}, kdata.MapErr(err)
+	}
+	// Items of a list carry no line items; GetOrder loads them.
+	return kakarot.NextPage(rows, limit,
+		func(row order.Row) domain.Order { return toDomain(store.OrderWithItemsRow{Row: row}) },
+		func(row order.Row) orderCursor { return orderCursor{CreatedAt: row.CreatedAt, ID: row.ID} })
 }
 
 // toDomain maps storm rows (database types) to the domain type.

@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"iter"
 
 	"github.com/gsoultan/kakarot"
 	"github.com/gsoultan/kakarot/examples/orders/domain"
@@ -13,22 +14,35 @@ import (
 type OrderService interface {
 	PlaceOrder(ctx context.Context, in domain.PlaceOrder) (domain.Order, error)
 	GetOrder(ctx context.Context, in domain.GetOrder) (domain.Order, error)
+	ListOrders(ctx context.Context, in domain.ListOrders) (kakarot.Page[domain.Order], error)
+	ExportOrders(ctx context.Context, in domain.ExportOrders) iter.Seq2[domain.Order, error]
 }
 
-type orderService struct {
-	place kakarot.Usecase[domain.PlaceOrder, domain.Order]
-	get   kakarot.Usecase[domain.GetOrder, domain.Order]
+// Usecases groups what the service composes.
+type Usecases struct {
+	Place  kakarot.Usecase[domain.PlaceOrder, domain.Order]
+	Get    kakarot.Usecase[domain.GetOrder, domain.Order]
+	List   kakarot.Usecase[domain.ListOrders, kakarot.Page[domain.Order]]
+	Export kakarot.ServerStream[domain.ExportOrders, domain.Order]
 }
+
+type orderService struct{ uc Usecases }
 
 // New returns the order service.
-func New(place kakarot.Usecase[domain.PlaceOrder, domain.Order], get kakarot.Usecase[domain.GetOrder, domain.Order]) OrderService {
-	return &orderService{place: place, get: get}
-}
+func New(uc Usecases) OrderService { return &orderService{uc: uc} }
 
 func (s *orderService) PlaceOrder(ctx context.Context, in domain.PlaceOrder) (domain.Order, error) {
-	return s.place.Execute(ctx, in)
+	return s.uc.Place.Execute(ctx, in)
 }
 
 func (s *orderService) GetOrder(ctx context.Context, in domain.GetOrder) (domain.Order, error) {
-	return s.get.Execute(ctx, in)
+	return s.uc.Get.Execute(ctx, in)
+}
+
+func (s *orderService) ListOrders(ctx context.Context, in domain.ListOrders) (kakarot.Page[domain.Order], error) {
+	return s.uc.List.Execute(ctx, in)
+}
+
+func (s *orderService) ExportOrders(ctx context.Context, in domain.ExportOrders) iter.Seq2[domain.Order, error] {
+	return s.uc.Export(ctx, in)
 }

@@ -40,6 +40,23 @@ func (m *memRepo) Get(_ context.Context, id string) (domain.Order, error) {
 	return o, nil
 }
 
+func (m *memRepo) ListByCustomer(_ context.Context, customerID, cursor string, limit int) (kakarot.Page[domain.Order], error) {
+	var out []domain.Order
+	for _, o := range m.orders {
+		if o.CustomerID == customerID {
+			out = append(out, o)
+		}
+	}
+	return kakarot.Page[domain.Order]{Items: out}, nil
+}
+
+type memEvents struct{ placed []domain.Order }
+
+func (e *memEvents) OrderPlaced(_ context.Context, o domain.Order) error {
+	e.placed = append(e.placed, o)
+	return nil
+}
+
 type noTx struct{ calls int }
 
 func (t *noTx) Within(ctx context.Context, fn func(context.Context) error) error {
@@ -51,7 +68,12 @@ func newServer(t *testing.T) (http.Handler, *noTx) {
 	t.Helper()
 	repo := &memRepo{orders: map[string]domain.Order{}}
 	tx := &noTx{}
-	svc := service.New(&usecase.PlaceOrder{Orders: repo, Tx: tx}, &usecase.GetOrder{Orders: repo})
+	svc := service.New(service.Usecases{
+		Place:  &usecase.PlaceOrder{Orders: repo, Events: &memEvents{}, Tx: tx},
+		Get:    &usecase.GetOrder{Orders: repo},
+		List:   &usecase.ListOrders{Orders: repo},
+		Export: (&usecase.ExportOrders{Orders: repo}).Stream,
+	})
 	r := httpx.NewRouter()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	transport.RegisterHTTP(r, endpoint.Make(svc), middleware.Default(log, time.Second))
@@ -103,5 +125,28 @@ func TestGetMissingOrder(t *testing.T) {
 	h.ServeHTTP(w, httptest.NewRequest("GET", "/orders/nope", nil))
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+}
+
+func TestListAndExport(t *testing.T) {
+	h, _ := newServer(t)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("POST", "/orders",
+		strings.NewReader(`{"customer_id":"c-9","items":[{"sku":"pen","quantity":2}]}`)))
+
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/orders", nil))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("list without customer: %d", w.Code)
+	}
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/orders?customer_id=c-9&limit=10", nil))
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"items":[{"id":"o-1"`) {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/orders/export?customer_id=c-9", nil))
+	if w.Code != 200 || strings.Count(w.Body.String(), "\n") != 1 {
+		t.Fatalf("%d %q", w.Code, w.Body)
 	}
 }

@@ -16,6 +16,8 @@ import (
 
 	"github.com/gsoultan/kakarot"
 	kdata "github.com/gsoultan/kakarot/data"
+	"github.com/gsoultan/kakarot/data/outbox"
+	outboxmodel "github.com/gsoultan/kakarot/data/outbox/model"
 	"github.com/gsoultan/kakarot/examples/orders/data"
 	"github.com/gsoultan/kakarot/examples/orders/data/model"
 	"github.com/gsoultan/kakarot/examples/orders/endpoint"
@@ -46,7 +48,7 @@ func run(ctx context.Context) error {
 	db := pgxdrv.Pool{P: pool}
 
 	if os.Getenv("AUTO_MIGRATE") == "1" {
-		s, err := storm.Build(&model.Order{}, &model.OrderItem{})
+		s, err := storm.Build(&model.Order{}, &model.OrderItem{}, &outboxmodel.OutboxEvent{})
 		if err != nil {
 			return err
 		}
@@ -57,10 +59,18 @@ func run(ctx context.Context) error {
 
 	// Wiring by hand; `kakarot gen` will generate this in milestone 2.
 	repo := &data.OrderRepo{DB: db}
-	svc := service.New(
-		&usecase.PlaceOrder{Orders: repo, Tx: kdata.NewTxManager(db)},
-		&usecase.GetOrder{Orders: repo},
-	)
+	svc := service.New(service.Usecases{
+		Place:  &usecase.PlaceOrder{Orders: repo, Events: &data.Events{DB: db}, Tx: kdata.NewTxManager(db)},
+		Get:    &usecase.GetOrder{Orders: repo},
+		List:   &usecase.ListOrders{Orders: repo},
+		Export: (&usecase.ExportOrders{Orders: repo}).Stream,
+	})
+
+	// Publishes outbox events; replace the logger with your broker client.
+	relay := &outbox.Relay{DB: db, Logger: log, Publisher: outbox.PublisherFunc(func(ctx context.Context, m outbox.Message) error {
+		log.InfoContext(ctx, "event", "topic", m.Topic, "id", m.ID, "key", m.Key)
+		return nil
+	})}
 
 	r := httpx.NewRouter()
 	r.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
@@ -69,7 +79,7 @@ func run(ctx context.Context) error {
 	app := &kakarot.App{
 		Name:    "orders",
 		Logger:  log,
-		Servers: []kakarot.Server{httpx.NewServer(":8080", r)},
+		Servers: []kakarot.Server{httpx.NewServer(":8080", r), relay},
 		OnStop:  []func(context.Context) error{func(context.Context) error { pool.Close(); return nil }},
 	}
 	return app.Run(ctx)
