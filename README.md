@@ -2,7 +2,7 @@
 
 A layered Go framework: **transport → middleware → endpoint → service → usecase → repository**, each layer with a typed contract.
 
-- **Generic endpoints.** Every operation is a `kakarot.Endpoint[Req, Resp]`; middleware written once works for every endpoint and every transport, with no `interface{}` casts in user code.
+- **Type safe end to end.** Every operation is a `kakarot.Endpoint[Req, Resp]`. Shared middleware (`func(ctx, op, next) error`) never sees an untyped request; middleware that needs the request is a generic `TypedMiddleware[Req, Resp]` such as `middleware.Validated`, checked by the compiler. No `any` and no casts in the public API.
 - **Standard library HTTP.** `httpx` binds endpoints to Go's `http.ServeMux` patterns (`GET /orders/{id}`); any `func(http.Handler) http.Handler` middleware works.
 - **Domain types are the DTOs.** They flow from transport down to the repository interface.
 - **Repositories use [storm](https://github.com/gsoultan/storm).** storm models (one plain struct per table) are the database types and never leave the repository. `kakarot/data` carries storm transactions in `context.Context`, so usecases open transactions without importing storm.
@@ -15,7 +15,7 @@ Design notes and the comparison with go-kit, gin, echo, fiber, chi, kratos and g
 ```text
 endpoint.go, errors.go, app.go   core: Endpoint, Middleware, Wrap, Usecase, TxManager, Error, App
 transport/httpx/                 HTTP transport: Router, Handle, tag-based decoding, error mapping
-middleware/                      Recover, Logging (slog), Timeout, Validate, Default
+middleware/                      Recover, Logging (slog), Timeout, Default; typed Validated
 data/                            storm integration: TxManager, Executor, MapErr
 examples/orders/                 a complete service built on every layer
 ```

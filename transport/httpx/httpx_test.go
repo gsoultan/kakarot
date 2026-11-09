@@ -41,16 +41,16 @@ func (c createItem) Validate() error {
 
 func newRouter() *httpx.Router {
 	r := httpx.NewRouter()
-	g := r.Group("items", middleware.Validate())
+	g := r.Group("items")
 	httpx.Handle(g, "GET /items/{id}", func(_ context.Context, in getItem) (item, error) {
 		if in.ID == "missing" {
 			return item{}, kakarot.NotFound("item", in.ID)
 		}
 		return item{ID: in.ID, Limit: in.Limit, Tags: in.Tags, Tenant: in.Tenant}, nil
 	})
-	httpx.Handle(g, "POST /items", func(_ context.Context, in createItem) (item, error) {
+	httpx.Handle(g, "POST /items", middleware.Validated(func(_ context.Context, in createItem) (item, error) {
 		return item{ID: "1", Name: in.Name}, nil
-	})
+	}))
 	return r
 }
 
@@ -134,14 +134,14 @@ func BenchmarkHandle(b *testing.B) {
 func TestOptions(t *testing.T) {
 	r := httpx.NewRouter()
 	var seen string
-	spy := func(op kakarot.Op, next kakarot.Call) kakarot.Call {
+	spy := func(ctx context.Context, op kakarot.Op, next kakarot.Next) error {
 		seen = op.String()
-		return next
+		return next(ctx)
 	}
 	custom := func(*http.Request) (createItem, error) { return createItem{Name: "from-decoder"}, nil }
-	httpx.Handle(r.Group("items"), "PUT /items", func(_ context.Context, in createItem) (item, error) {
+	httpx.HandleCodec(r.Group("items"), "PUT /items", func(_ context.Context, in createItem) (item, error) {
 		return item{Name: in.Name}, nil
-	}, httpx.Name("Replace"), httpx.Status(http.StatusAccepted), httpx.Decoder(httpx.DecodeFunc[createItem](custom)), httpx.With(spy))
+	}, custom, nil, httpx.Name("Replace"), httpx.Status(http.StatusAccepted), httpx.With(spy))
 
 	w := do(t, r, "PUT", "/items", "", nil)
 	if w.Code != http.StatusAccepted || !strings.Contains(w.Body.String(), "from-decoder") {
@@ -150,14 +150,4 @@ func TestOptions(t *testing.T) {
 	if seen != "items.Replace" {
 		t.Fatalf("op = %q", seen)
 	}
-}
-
-func TestDecoderTypeMismatchPanics(t *testing.T) {
-	defer func() {
-		if recover() == nil {
-			t.Fatal("want panic")
-		}
-	}()
-	wrong := httpx.DecodeFunc[int](func(*http.Request) (int, error) { return 0, nil })
-	httpx.Handle(httpx.NewRouter(), "GET /x", func(context.Context, string) (string, error) { return "", nil }, httpx.Decoder(wrong))
 }

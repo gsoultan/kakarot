@@ -8,6 +8,7 @@ import (
 	"github.com/gsoultan/kakarot"
 	"github.com/gsoultan/kakarot/examples/orders/domain"
 	"github.com/gsoultan/kakarot/examples/orders/service"
+	"github.com/gsoultan/kakarot/middleware"
 )
 
 // Endpoints holds one typed endpoint per service method.
@@ -17,9 +18,10 @@ type Endpoints struct {
 }
 
 // Make builds the endpoints. A method value already has the Endpoint shape.
+// Validated only compiles because domain.PlaceOrder has a Validate method.
 func Make(svc service.OrderService) Endpoints {
 	return Endpoints{
-		PlaceOrder: svc.PlaceOrder,
+		PlaceOrder: middleware.Validated(svc.PlaceOrder),
 		GetOrder:   svc.GetOrder,
 	}
 }

@@ -3,13 +3,12 @@
 //
 // The endpoint is the core primitive. Every operation, whatever transport
 // carries it, becomes an Endpoint[Req, Resp], so one middleware works for
-// HTTP, gRPC and message consumers alike, and user code never casts.
+// HTTP, gRPC and message consumers alike. The public API has no `any`:
+// shared middleware never sees the request, and typed middleware is checked
+// by the compiler.
 package kakarot
 
-import (
-	"context"
-	"fmt"
-)
+import "context"
 
 // Endpoint is one RPC-shaped operation, independent of any transport.
 // Req and Resp are domain types (the DTOs of the application).
@@ -26,60 +25,60 @@ type Op struct {
 // String returns "Service.Method".
 func (o Op) String() string { return o.Service + "." + o.Method }
 
-// Call is the type-erased form of an endpoint that middleware sees.
-//
-// Go cannot keep generic functions in a slice, so middleware works on Call
-// while users only ever hold typed endpoints. Most middleware (logging,
-// tracing, timeout, retry) never looks at req or resp at all.
-type Call func(ctx context.Context, req any) (any, error)
+// Next continues the call chain. It is a closure over the typed request and
+// response, so shared middleware can run code around a call, change ctx,
+// retry, or short-circuit with an error, without ever seeing an untyped value.
+type Next func(ctx context.Context) error
 
-// Middleware decorates an endpoint. It must return a Call that preserves the
-// dynamic types of req and resp.
-type Middleware func(op Op, next Call) Call
+// Middleware is shared, type-agnostic endpoint middleware (logging, tracing,
+// timeout, recover, retry, rate limiting). It works for every endpoint
+// because it never touches Req or Resp; middleware that needs them is a
+// TypedMiddleware instead.
+type Middleware func(ctx context.Context, op Op, next Next) error
 
-// Wrap applies middleware to a typed endpoint and returns a typed endpoint.
-// The first middleware is the outermost.
+// TypedMiddleware decorates one endpoint type and may read or replace the
+// request and response, checked at compile time.
+type TypedMiddleware[Req, Resp any] func(op Op, next Endpoint[Req, Resp]) Endpoint[Req, Resp]
+
+// Wrap applies shared middleware to a typed endpoint and returns a typed
+// endpoint. The first middleware is the outermost.
 func Wrap[Req, Resp any](op Op, e Endpoint[Req, Resp], mws ...Middleware) Endpoint[Req, Resp] {
 	if len(mws) == 0 {
 		return e
 	}
-	call := Call(func(ctx context.Context, req any) (any, error) {
-		r, ok := req.(Req)
-		if !ok {
-			return nil, fmt.Errorf("kakarot: %s: middleware changed request type to %T", op, req)
-		}
-		return e(ctx, r)
-	})
-	for _, mw := range reverse(mws) {
-		call = mw(op, call)
-	}
 	return func(ctx context.Context, req Req) (Resp, error) {
-		out, err := call(ctx, req)
-		resp, ok := out.(Resp)
-		if !ok && out != nil {
-			var zero Resp
-			return zero, fmt.Errorf("kakarot: %s: middleware changed response type to %T", op, out)
+		var resp Resp
+		next := Next(func(ctx context.Context) error {
+			var err error
+			resp, err = e(ctx, req)
+			return err
+		})
+		for i := len(mws) - 1; i >= 0; i-- {
+			mw, inner := mws[i], next
+			next = func(ctx context.Context) error { return mw(ctx, op, inner) }
 		}
+		err := next(ctx)
 		return resp, err
 	}
 }
 
-// Chain composes middleware into one, outermost first.
-func Chain(mws ...Middleware) Middleware {
-	return func(op Op, next Call) Call {
-		for _, mw := range reverse(mws) {
-			next = mw(op, next)
-		}
-		return next
+// Decorate applies typed middleware to an endpoint, outermost first.
+func Decorate[Req, Resp any](op Op, e Endpoint[Req, Resp], mws ...TypedMiddleware[Req, Resp]) Endpoint[Req, Resp] {
+	for i := len(mws) - 1; i >= 0; i-- {
+		e = mws[i](op, e)
 	}
+	return e
 }
 
-func reverse[T any](s []T) []T {
-	out := make([]T, len(s))
-	for i, v := range s {
-		out[len(s)-1-i] = v
+// Chain composes shared middleware into one, outermost first.
+func Chain(mws ...Middleware) Middleware {
+	return func(ctx context.Context, op Op, next Next) error {
+		for i := len(mws) - 1; i >= 0; i-- {
+			mw, inner := mws[i], next
+			next = func(ctx context.Context) error { return mw(ctx, op, inner) }
+		}
+		return next(ctx)
 	}
-	return out
 }
 
 // Usecase is one business operation. Implementations are plain structs whose

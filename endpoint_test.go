@@ -17,13 +17,11 @@ func greet(_ context.Context, r greetReq) (greetResp, error) {
 }
 
 func trace(log *[]string, name string) kakarot.Middleware {
-	return func(op kakarot.Op, next kakarot.Call) kakarot.Call {
-		return func(ctx context.Context, req any) (any, error) {
-			*log = append(*log, name+">"+op.Method)
-			resp, err := next(ctx, req)
-			*log = append(*log, name+"<")
-			return resp, err
-		}
+	return func(ctx context.Context, op kakarot.Op, next kakarot.Next) error {
+		*log = append(*log, name+">"+op.Method)
+		err := next(ctx)
+		*log = append(*log, name+"<")
+		return err
 	}
 }
 
@@ -53,10 +51,8 @@ func TestWrapNoMiddlewareReturnsSameEndpoint(t *testing.T) {
 }
 
 func TestWrapShortCircuitError(t *testing.T) {
-	deny := func(op kakarot.Op, next kakarot.Call) kakarot.Call {
-		return func(ctx context.Context, req any) (any, error) {
-			return nil, kakarot.E(kakarot.CodeForbidden, "no", nil)
-		}
+	deny := func(context.Context, kakarot.Op, kakarot.Next) error {
+		return kakarot.E(kakarot.CodeForbidden, "no", nil)
 	}
 	e := kakarot.Wrap(kakarot.Op{}, greet, deny)
 	resp, err := e(t.Context(), greetReq{})
@@ -68,13 +64,37 @@ func TestWrapShortCircuitError(t *testing.T) {
 	}
 }
 
-func TestWrapRejectsChangedRequestType(t *testing.T) {
-	swap := func(op kakarot.Op, next kakarot.Call) kakarot.Call {
-		return func(ctx context.Context, req any) (any, error) { return next(ctx, 42) }
+func TestRetryMiddlewareCallsNextTwice(t *testing.T) {
+	calls := 0
+	flaky := func(_ context.Context, r greetReq) (greetResp, error) {
+		calls++
+		if calls == 1 {
+			return greetResp{}, errors.New("transient")
+		}
+		return greetResp{Text: "ok " + r.Name}, nil
 	}
-	_, err := kakarot.Wrap(kakarot.Op{Method: "Greet"}, greet, swap)(t.Context(), greetReq{})
-	if err == nil {
-		t.Fatal("want error")
+	retry := func(ctx context.Context, _ kakarot.Op, next kakarot.Next) error {
+		if err := next(ctx); err != nil {
+			return next(ctx)
+		}
+		return nil
+	}
+	resp, err := kakarot.Wrap(kakarot.Op{}, flaky, retry)(t.Context(), greetReq{Name: "x"})
+	if err != nil || resp.Text != "ok x" || calls != 2 {
+		t.Fatalf("resp=%+v err=%v calls=%d", resp, err, calls)
+	}
+}
+
+func TestDecorateTyped(t *testing.T) {
+	upper := func(_ kakarot.Op, next kakarot.Endpoint[greetReq, greetResp]) kakarot.Endpoint[greetReq, greetResp] {
+		return func(ctx context.Context, r greetReq) (greetResp, error) {
+			r.Name = "[" + r.Name + "]" // typed access, no casts
+			return next(ctx, r)
+		}
+	}
+	resp, _ := kakarot.Decorate(kakarot.Op{}, greet, upper)(t.Context(), greetReq{Name: "ada"})
+	if resp.Text != "hi [ada]" {
+		t.Fatal(resp.Text)
 	}
 }
 

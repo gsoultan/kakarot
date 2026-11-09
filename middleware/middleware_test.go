@@ -43,13 +43,20 @@ func (x v) Validate() error {
 	return nil
 }
 
-func TestDefaultStack(t *testing.T) {
-	e := kakarot.Wrap(kakarot.Op{Method: "V"}, func(context.Context, v) (string, error) { return "ok", nil },
-		middleware.Default(quiet, time.Second))
+func TestValidated(t *testing.T) {
+	e := middleware.Validated(func(context.Context, v) (string, error) { return "ok", nil })
 	if _, err := e(t.Context(), v{ok: false}); kakarot.CodeOf(err) != kakarot.CodeInvalid {
 		t.Fatalf("err = %v", err)
 	}
 	if out, err := e(t.Context(), v{ok: true}); err != nil || out != "ok" {
 		t.Fatalf("out=%q err=%v", out, err)
+	}
+}
+
+func TestDefaultStack(t *testing.T) {
+	e := kakarot.Wrap(kakarot.Op{Method: "V"}, func(context.Context, v) (string, error) { panic("x") },
+		middleware.Default(quiet, time.Second))
+	if _, err := e(t.Context(), v{}); kakarot.CodeOf(err) != kakarot.CodeInternal {
+		t.Fatalf("err = %v", err)
 	}
 }

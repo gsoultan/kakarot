@@ -5,10 +5,8 @@ package httpx
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net"
 	"net/http"
-	"reflect"
 	"strings"
 	"time"
 
@@ -52,8 +50,6 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 type options struct {
 	name   string
 	status int
-	decode any // DecodeFunc[Req], checked at registration
-	encode any // EncodeFunc[Resp], checked at registration
 	onErr  ErrorEncoder
 	mws    []kakarot.Middleware
 }
@@ -68,13 +64,6 @@ func Name(method string) Option { return func(o *options) { o.name = method } }
 // Status sets the success status; default 200 (201 for POST).
 func Status(code int) Option { return func(o *options) { o.status = code } }
 
-// Decoder replaces the tag-based decoder. Its Req must match the endpoint's;
-// a mismatch panics when the route is registered.
-func Decoder[Req any](d DecodeFunc[Req]) Option { return func(o *options) { o.decode = d } }
-
-// Encoder replaces the JSON encoder. Its Resp must match the endpoint's.
-func Encoder[Resp any](e EncodeFunc[Resp]) Option { return func(o *options) { o.encode = e } }
-
 // Errors replaces the error encoder.
 func Errors(e ErrorEncoder) Option { return func(o *options) { o.onErr = e } }
 
@@ -83,13 +72,20 @@ func With(mws ...kakarot.Middleware) Option {
 	return func(o *options) { o.mws = append(o.mws, mws...) }
 }
 
-// Handle binds an endpoint to a pattern such as "POST /orders".
+// Handle binds an endpoint to a pattern such as "POST /orders", with the
+// tag-based decoder and the JSON encoder.
 //
 //	httpx.Handle(r, "GET /orders/{id}", eps.GetOrder)
 //
 // Req and Resp are inferred from the endpoint, so the route is typed end to
 // end: no casts, no framework context type in business code.
 func Handle[Req, Resp any](r *Router, pattern string, e kakarot.Endpoint[Req, Resp], opts ...Option) {
+	HandleCodec(r, pattern, e, nil, nil, opts...)
+}
+
+// HandleCodec is Handle with a custom decoder and/or encoder (nil keeps the
+// default). Their types must match the endpoint's, checked by the compiler.
+func HandleCodec[Req, Resp any](r *Router, pattern string, e kakarot.Endpoint[Req, Resp], decode DecodeFunc[Req], encode EncodeFunc[Resp], opts ...Option) {
 	o := options{name: pattern, onErr: WriteError}
 	if strings.HasPrefix(pattern, http.MethodPost+" ") {
 		o.status = http.StatusCreated
@@ -99,21 +95,11 @@ func Handle[Req, Resp any](r *Router, pattern string, e kakarot.Endpoint[Req, Re
 	for _, opt := range opts {
 		opt(&o)
 	}
-	decode := DefaultDecoder[Req]()
-	if o.decode != nil {
-		d, ok := o.decode.(DecodeFunc[Req])
-		if !ok {
-			panic(fmt.Sprintf("httpx: %s: decoder is %T, want DecodeFunc[%s]", pattern, o.decode, reflect.TypeFor[Req]()))
-		}
-		decode = d
+	if decode == nil {
+		decode = DefaultDecoder[Req]()
 	}
-	encode := EncodeFunc[Resp](JSONEncoder[Resp])
-	if o.encode != nil {
-		enc, ok := o.encode.(EncodeFunc[Resp])
-		if !ok {
-			panic(fmt.Sprintf("httpx: %s: encoder is %T, want EncodeFunc[%s]", pattern, o.encode, reflect.TypeFor[Resp]()))
-		}
-		encode = enc
+	if encode == nil {
+		encode = JSONEncoder[Resp]
 	}
 
 	op := kakarot.Op{Service: r.service, Method: o.name, Transport: "http"}
