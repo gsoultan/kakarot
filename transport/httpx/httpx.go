@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"reflect"
 	"strings"
 	"time"
 
@@ -22,10 +23,11 @@ type Router struct {
 	service string
 	epMws   []kakarot.Middleware
 	onErr   ErrorEncoder
+	routes  *routeTable
 }
 
 // NewRouter returns an empty router.
-func NewRouter() *Router { return &Router{mux: http.NewServeMux()} }
+func NewRouter() *Router { return &Router{mux: http.NewServeMux(), routes: &routeTable{}} }
 
 // Use adds transport middleware, applied to every route (outermost first).
 func (r *Router) Use(mws ...func(http.Handler) http.Handler) { r.mws = append(r.mws, mws...) }
@@ -33,7 +35,7 @@ func (r *Router) Use(mws ...func(http.Handler) http.Handler) { r.mws = append(r.
 // Group returns a view of the router whose routes share a service name and
 // endpoint middleware.
 func (r *Router) Group(service string, mws ...kakarot.Middleware) *Router {
-	return &Router{mux: r.mux, service: service, onErr: r.onErr, epMws: append(append([]kakarot.Middleware{}, r.epMws...), mws...)}
+	return &Router{mux: r.mux, routes: r.routes, service: service, onErr: r.onErr, epMws: append(append([]kakarot.Middleware{}, r.epMws...), mws...)}
 }
 
 // Service returns the group's service name ("" on the root router).
@@ -113,6 +115,8 @@ func (r *Router) HandleCodec[Req, Resp any](pattern string, e kakarot.Endpoint[R
 	op := kakarot.Op{Service: r.service, Method: o.name, Transport: "http"}
 	e = kakarot.Wrap(op, e, append(append([]kakarot.Middleware{}, r.epMws...), o.mws...)...)
 
+	r.routes.add(routeInfo{pattern: pattern, service: r.service, name: o.name, status: o.status,
+		req: reflect.TypeFor[Req](), resp: reflect.TypeFor[Resp](), kind: kindUnary})
 	r.mux.HandleFunc(pattern, func(w http.ResponseWriter, req *http.Request) {
 		ctx := req.Context()
 		in, err := decode(req)

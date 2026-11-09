@@ -75,6 +75,7 @@ func run(ctx context.Context) error {
 	r := httpx.NewRouter()
 	r.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	transport.RegisterHTTP(r, endpoint.Make(svc), middleware.Default(log, 5*time.Second))
+	r.ServeOpenAPI("GET /openapi.json", httpx.Info{Title: "orders", Version: "0.1.0"})
 
 	app := &kakarot.App{
 		Name:    "orders",

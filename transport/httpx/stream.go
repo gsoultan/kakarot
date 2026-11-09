@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"iter"
 	"net/http"
+	"reflect"
 	"strings"
 
 	"github.com/gsoultan/kakarot"
@@ -24,6 +25,8 @@ func (r *Router) Stream[Req, Msg any](pattern string, s kakarot.ServerStream[Req
 	op := kakarot.Op{Service: r.service, Method: o.name, Transport: "http"}
 	s = kakarot.WrapServerStream(op, s, append(append([]kakarot.Middleware{}, r.epMws...), o.mws...)...)
 	decode := DefaultDecoder[Req]()
+	r.routes.add(routeInfo{pattern: pattern, service: r.service, name: o.name, status: http.StatusOK,
+		req: reflect.TypeFor[Req](), resp: reflect.TypeFor[Msg](), kind: kindStream})
 
 	r.mux.HandleFunc(pattern, func(w http.ResponseWriter, req *http.Request) {
 		ctx := req.Context()
@@ -96,6 +99,8 @@ func (r *Router) Upload[Msg, Resp any](pattern string, s kakarot.ClientStream[Ms
 	o := r.routeOptions(pattern, opts)
 	op := kakarot.Op{Service: r.service, Method: o.name, Transport: "http"}
 	s = kakarot.WrapClientStream(op, s, append(append([]kakarot.Middleware{}, r.epMws...), o.mws...)...)
+	r.routes.add(routeInfo{pattern: pattern, service: r.service, name: o.name, status: o.status,
+		req: reflect.TypeFor[Msg](), resp: reflect.TypeFor[Resp](), kind: kindUpload})
 
 	r.mux.HandleFunc(pattern, func(w http.ResponseWriter, req *http.Request) {
 		ctx := req.Context()
