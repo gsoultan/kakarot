@@ -35,7 +35,7 @@ func (r *Router) Group(service string, mws ...kakarot.Middleware) *Router {
 	return &Router{mux: r.mux, service: service, epMws: append(append([]kakarot.Middleware{}, r.epMws...), mws...)}
 }
 
-// HandleFunc registers a plain handler (health checks, static files).
+// HandleFunc registers a plain http.HandlerFunc (health checks, static files).
 func (r *Router) HandleFunc(pattern string, h http.HandlerFunc) { r.mux.Handle(pattern, h) }
 
 // ServeHTTP applies transport middleware and dispatches.
@@ -75,17 +75,18 @@ func With(mws ...kakarot.Middleware) Option {
 // Handle binds an endpoint to a pattern such as "POST /orders", with the
 // tag-based decoder and the JSON encoder.
 //
-//	httpx.Handle(r, "GET /orders/{id}", eps.GetOrder)
+//	r.Handle("GET /orders/{id}", eps.GetOrder)
 //
-// Req and Resp are inferred from the endpoint, so the route is typed end to
-// end: no casts, no framework context type in business code.
-func Handle[Req, Resp any](r *Router, pattern string, e kakarot.Endpoint[Req, Resp], opts ...Option) {
-	HandleCodec(r, pattern, e, nil, nil, opts...)
+// Handle is a generic method (Go 1.27): Req and Resp are inferred from the
+// endpoint, so the route is typed end to end with no casts and no framework
+// context type in business code.
+func (r *Router) Handle[Req, Resp any](pattern string, e kakarot.Endpoint[Req, Resp], opts ...Option) {
+	r.HandleCodec(pattern, e, nil, nil, opts...)
 }
 
 // HandleCodec is Handle with a custom decoder and/or encoder (nil keeps the
 // default). Their types must match the endpoint's, checked by the compiler.
-func HandleCodec[Req, Resp any](r *Router, pattern string, e kakarot.Endpoint[Req, Resp], decode DecodeFunc[Req], encode EncodeFunc[Resp], opts ...Option) {
+func (r *Router) HandleCodec[Req, Resp any](pattern string, e kakarot.Endpoint[Req, Resp], decode DecodeFunc[Req], encode EncodeFunc[Resp], opts ...Option) {
 	o := options{name: pattern, onErr: WriteError}
 	if strings.HasPrefix(pattern, http.MethodPost+" ") {
 		o.status = http.StatusCreated

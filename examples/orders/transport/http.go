@@ -11,6 +11,6 @@ import (
 // every route in the group.
 func RegisterHTTP(r *httpx.Router, eps endpoint.Endpoints, mws ...kakarot.Middleware) {
 	g := r.Group("order", mws...)
-	httpx.Handle(g, "POST /orders", eps.PlaceOrder, httpx.Name("PlaceOrder"))
-	httpx.Handle(g, "GET /orders/{id}", eps.GetOrder, httpx.Name("GetOrder"))
+	g.Handle("POST /orders", eps.PlaceOrder, httpx.Name("PlaceOrder"))
+	g.Handle("GET /orders/{id}", eps.GetOrder, httpx.Name("GetOrder"))
 }

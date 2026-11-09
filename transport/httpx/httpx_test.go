@@ -42,13 +42,13 @@ func (c createItem) Validate() error {
 func newRouter() *httpx.Router {
 	r := httpx.NewRouter()
 	g := r.Group("items")
-	httpx.Handle(g, "GET /items/{id}", func(_ context.Context, in getItem) (item, error) {
+	g.Handle("GET /items/{id}", func(_ context.Context, in getItem) (item, error) {
 		if in.ID == "missing" {
 			return item{}, kakarot.NotFound("item", in.ID)
 		}
 		return item{ID: in.ID, Limit: in.Limit, Tags: in.Tags, Tenant: in.Tenant}, nil
 	})
-	httpx.Handle(g, "POST /items", middleware.Validated(func(_ context.Context, in createItem) (item, error) {
+	g.Handle("POST /items", middleware.Validated(func(_ context.Context, in createItem) (item, error) {
 		return item{ID: "1", Name: in.Name}, nil
 	}))
 	return r
@@ -139,7 +139,7 @@ func TestOptions(t *testing.T) {
 		return next(ctx)
 	}
 	custom := func(*http.Request) (createItem, error) { return createItem{Name: "from-decoder"}, nil }
-	httpx.HandleCodec(r.Group("items"), "PUT /items", func(_ context.Context, in createItem) (item, error) {
+	r.Group("items").HandleCodec("PUT /items", func(_ context.Context, in createItem) (item, error) {
 		return item{Name: in.Name}, nil
 	}, custom, nil, httpx.Name("Replace"), httpx.Status(http.StatusAccepted), httpx.With(spy))
 

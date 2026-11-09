@@ -36,7 +36,7 @@ eps := endpoint.Make(service.New(place, get))
 // transport
 r := httpx.NewRouter()
 g := r.Group("order", middleware.Default(log, 5*time.Second))
-httpx.Handle(g, "GET /orders/{id}", eps.GetOrder, httpx.Name("GetOrder"))
+g.Handle("GET /orders/{id}", eps.GetOrder, httpx.Name("GetOrder"))
 
 app := &kakarot.App{Name: "orders", Servers: []kakarot.Server{httpx.NewServer(":8080", r)}}
 app.Run(ctx) // graceful shutdown on SIGINT/SIGTERM
