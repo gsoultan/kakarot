@@ -3,6 +3,7 @@ package kakarot
 import (
 	"errors"
 	"fmt"
+	"sync"
 )
 
 // Code classifies an error independently of any transport. Each transport
@@ -20,7 +21,7 @@ const (
 	CodeTimeout
 )
 
-var codeNames = [...]string{
+var codeNames = []string{
 	CodeInternal:     "internal",
 	CodeInvalid:      "invalid",
 	CodeNotFound:     "not_found",
@@ -31,7 +32,26 @@ var codeNames = [...]string{
 	CodeTimeout:      "timeout",
 }
 
+// NewCode registers an application-specific code, such as
+// "quota_exceeded". Call it from a package-level var so codes are fixed at
+// startup; transports map it with their own registry (httpx.RegisterStatus).
+//
+//	var CodeQuotaExceeded = kakarot.NewCode("quota_exceeded")
+func NewCode(name string) Code {
+	codeMu.Lock()
+	defer codeMu.Unlock()
+	if len(codeNames) > 255 {
+		panic("kakarot: too many error codes")
+	}
+	codeNames = append(codeNames, name)
+	return Code(len(codeNames) - 1)
+}
+
+var codeMu sync.Mutex
+
 func (c Code) String() string {
+	codeMu.Lock()
+	defer codeMu.Unlock()
 	if int(c) < len(codeNames) {
 		return codeNames[c]
 	}

@@ -3,6 +3,7 @@ package httpx_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -149,5 +150,55 @@ func TestOptions(t *testing.T) {
 	}
 	if seen != "items.Replace" {
 		t.Fatalf("op = %q", seen)
+	}
+}
+
+var codeQuota = kakarot.NewCode("quota_exceeded")
+
+func TestCustomCodeStatus(t *testing.T) {
+	httpx.RegisterStatus(codeQuota, http.StatusTooManyRequests)
+	r := httpx.NewRouter()
+	r.Handle("GET /q", func(context.Context, struct{}) (item, error) {
+		return item{}, kakarot.E(codeQuota, "monthly quota used up", nil)
+	})
+	w := do(t, r, "GET", "/q", "", nil)
+	if w.Code != http.StatusTooManyRequests || !strings.Contains(w.Body.String(), `"quota_exceeded"`) {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+}
+
+// problemErr is an application's own error type.
+type problemErr struct{ Type, Detail string }
+
+func (e *problemErr) Error() string { return e.Detail }
+
+func TestRouterErrorEncoder(t *testing.T) {
+	r := httpx.NewRouter()
+	r.SetErrorEncoder(func(_ context.Context, w http.ResponseWriter, err error) {
+		w.Header().Set("Content-Type", "application/problem+json")
+		if p, ok := errors.AsType[*problemErr](err); ok {
+			w.WriteHeader(http.StatusPaymentRequired)
+			_ = json.NewEncoder(w).Encode(map[string]string{"type": p.Type, "detail": p.Detail})
+			return
+		}
+		e := kakarot.AsError(err)
+		w.WriteHeader(httpx.StatusOf(e.Code))
+		_ = json.NewEncoder(w).Encode(map[string]string{"type": e.Code.String(), "detail": e.Message})
+	})
+	g := r.Group("billing") // inherits the encoder
+	g.Handle("GET /pay", func(context.Context, struct{}) (item, error) {
+		return item{}, &problemErr{Type: "card_declined", Detail: "card was declined"}
+	})
+	g.Handle("GET /missing", func(context.Context, struct{}) (item, error) {
+		return item{}, kakarot.NotFound("invoice", "7")
+	})
+
+	w := do(t, r, "GET", "/pay", "", nil)
+	if w.Code != http.StatusPaymentRequired || w.Header().Get("Content-Type") != "application/problem+json" ||
+		!strings.Contains(w.Body.String(), "card_declined") {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+	if w := do(t, r, "GET", "/missing", "", nil); w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), `"not_found"`) {
+		t.Fatalf("%d %s", w.Code, w.Body)
 	}
 }

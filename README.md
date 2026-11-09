@@ -70,3 +70,22 @@ $ KAKAROT_TEST_DSN=postgres://user:pass@localhost:5432/orders go test ./examples
 2. `kakarot new` / `kakarot gen`: endpoints, routes, DI wiring and OpenAPI generated from service interfaces
 3. gRPC transport, OpenTelemetry middleware
 4. Circuit breaker, retry, rate limit, load shedding; queue consumers
+
+## Custom errors
+
+```go
+// 1. Your own codes, with their HTTP status
+var CodeQuotaExceeded = kakarot.NewCode("quota_exceeded")
+httpx.RegisterStatus(CodeQuotaExceeded, http.StatusTooManyRequests)
+return kakarot.E(CodeQuotaExceeded, "monthly quota used up", nil)
+
+// 2. Your own body shape (e.g. RFC 9457 problem+json), app-wide; groups inherit it
+r.SetErrorEncoder(func(ctx context.Context, w http.ResponseWriter, err error) {
+    if p, ok := errors.AsType[*MyProblem](err); ok { /* your own error type */ }
+    e := kakarot.AsError(err) // domain code, message, per-field problems
+    ...
+})
+
+// 3. One route only
+r.Handle("POST /pay", eps.Pay, httpx.Errors(payErrors))
+```

@@ -21,6 +21,7 @@ type Router struct {
 	mws     []func(http.Handler) http.Handler
 	service string
 	epMws   []kakarot.Middleware
+	onErr   ErrorEncoder
 }
 
 // NewRouter returns an empty router.
@@ -32,8 +33,13 @@ func (r *Router) Use(mws ...func(http.Handler) http.Handler) { r.mws = append(r.
 // Group returns a view of the router whose routes share a service name and
 // endpoint middleware.
 func (r *Router) Group(service string, mws ...kakarot.Middleware) *Router {
-	return &Router{mux: r.mux, service: service, epMws: append(append([]kakarot.Middleware{}, r.epMws...), mws...)}
+	return &Router{mux: r.mux, service: service, onErr: r.onErr, epMws: append(append([]kakarot.Middleware{}, r.epMws...), mws...)}
 }
+
+// SetErrorEncoder replaces the error encoder for every route registered on
+// this router afterwards, and for groups created from it afterwards. Use it
+// to change the error body shape app-wide; httpx.Errors overrides one route.
+func (r *Router) SetErrorEncoder(e ErrorEncoder) { r.onErr = e }
 
 // HandleFunc registers a plain http.HandlerFunc (health checks, static files).
 func (r *Router) HandleFunc(pattern string, h http.HandlerFunc) { r.mux.Handle(pattern, h) }
@@ -88,6 +94,9 @@ func (r *Router) Handle[Req, Resp any](pattern string, e kakarot.Endpoint[Req, R
 // default). Their types must match the endpoint's, checked by the compiler.
 func (r *Router) HandleCodec[Req, Resp any](pattern string, e kakarot.Endpoint[Req, Resp], decode DecodeFunc[Req], encode EncodeFunc[Resp], opts ...Option) {
 	o := options{name: pattern, onErr: WriteError}
+	if r.onErr != nil {
+		o.onErr = r.onErr
+	}
 	if strings.HasPrefix(pattern, http.MethodPost+" ") {
 		o.status = http.StatusCreated
 	} else {

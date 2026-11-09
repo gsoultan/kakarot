@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"sync"
 
 	"github.com/gsoultan/kakarot"
 )
@@ -23,12 +24,34 @@ func JSONEncoder[Resp any](_ context.Context, w http.ResponseWriter, status int,
 	return json.NewEncoder(w).Encode(resp)
 }
 
-// ErrorEncoder writes an error. The default is WriteError.
+// ErrorEncoder writes an error. The default is WriteError. A custom one can
+// read the domain error with kakarot.AsError(err), or its own error type with
+// errors.AsType, and write any body shape.
 type ErrorEncoder func(ctx context.Context, w http.ResponseWriter, err error)
 
+var (
+	statusMu     sync.RWMutex
+	customStatus = map[kakarot.Code]int{}
+)
+
+// RegisterStatus sets the HTTP status for a code, typically one made with
+// kakarot.NewCode. Call it during startup.
+func RegisterStatus(c kakarot.Code, status int) {
+	statusMu.Lock()
+	defer statusMu.Unlock()
+	customStatus[c] = status
+}
+
 // StatusOf maps a kakarot error code to an HTTP status. It is the only place
-// HTTP status codes meet domain errors.
+// HTTP status codes meet domain errors. Codes registered with RegisterStatus
+// win over the defaults.
 func StatusOf(c kakarot.Code) int {
+	statusMu.RLock()
+	st, ok := customStatus[c]
+	statusMu.RUnlock()
+	if ok {
+		return st
+	}
 	switch c {
 	case kakarot.CodeInvalid:
 		return http.StatusBadRequest
