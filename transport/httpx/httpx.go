@@ -36,6 +36,15 @@ func (r *Router) Group(service string, mws ...kakarot.Middleware) *Router {
 	return &Router{mux: r.mux, service: service, onErr: r.onErr, epMws: append(append([]kakarot.Middleware{}, r.epMws...), mws...)}
 }
 
+// Service returns the group's service name ("" on the root router).
+func (r *Router) Service() string { return r.service }
+
+// EndpointMiddleware returns a copy of the group's endpoint middleware, for
+// transports built on top of the router (wsx).
+func (r *Router) EndpointMiddleware() []kakarot.Middleware {
+	return append([]kakarot.Middleware{}, r.epMws...)
+}
+
 // SetErrorEncoder replaces the error encoder for every route registered on
 // this router afterwards, and for groups created from it afterwards. Use it
 // to change the error body shape app-wide; httpx.Errors overrides one route.
@@ -93,18 +102,7 @@ func (r *Router) Handle[Req, Resp any](pattern string, e kakarot.Endpoint[Req, R
 // HandleCodec is Handle with a custom decoder and/or encoder (nil keeps the
 // default). Their types must match the endpoint's, checked by the compiler.
 func (r *Router) HandleCodec[Req, Resp any](pattern string, e kakarot.Endpoint[Req, Resp], decode DecodeFunc[Req], encode EncodeFunc[Resp], opts ...Option) {
-	o := options{name: pattern, onErr: WriteError}
-	if r.onErr != nil {
-		o.onErr = r.onErr
-	}
-	if strings.HasPrefix(pattern, http.MethodPost+" ") {
-		o.status = http.StatusCreated
-	} else {
-		o.status = http.StatusOK
-	}
-	for _, opt := range opts {
-		opt(&o)
-	}
+	o := r.routeOptions(pattern, opts)
 	if decode == nil {
 		decode = DefaultDecoder[Req]()
 	}
@@ -131,6 +129,22 @@ func (r *Router) HandleCodec[Req, Resp any](pattern string, e kakarot.Endpoint[R
 			o.onErr(ctx, w, err)
 		}
 	})
+}
+
+func (r *Router) routeOptions(pattern string, opts []Option) options {
+	o := options{name: pattern, onErr: WriteError}
+	if r.onErr != nil {
+		o.onErr = r.onErr
+	}
+	if strings.HasPrefix(pattern, http.MethodPost+" ") {
+		o.status = http.StatusCreated
+	} else {
+		o.status = http.StatusOK
+	}
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return o
 }
 
 // Server adapts an http.Server to kakarot.Server.
