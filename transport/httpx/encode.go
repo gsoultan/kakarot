@@ -52,6 +52,9 @@ func StatusOf(c kakarot.Code) int {
 	if ok {
 		return st
 	}
+	if c.String() == "rate_limited" {
+		return http.StatusTooManyRequests
+	}
 	switch c {
 	case kakarot.CodeInvalid:
 		return http.StatusBadRequest
