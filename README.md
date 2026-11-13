@@ -33,6 +33,7 @@ The core has no dependencies outside the Go standard library. Anything that pull
 | `github.com/gsoultan/kakarot/otelx` | OpenTelemetry tracing and metrics | opentelemetry-go |
 | `github.com/gsoultan/kakarot/cmd/kakarot` | CLI: `new`, `gen` | x/tools |
 | `examples/orders` | a complete service on every layer | all of the above |
+| `examples/checkout` | a synchronous request followed by asynchronous payment, shipping, compensation and expiry | core, `data` |
 | `examples/wallet` | a money-transfer service: auth, idempotent transfers, ledger, outbox, gRPC | all of the above |
 
 ```text
@@ -242,6 +243,7 @@ Cursors are opaque, typed (`DecodeCursor[C]`), and a malformed cursor is a 400.
 var CodeQuotaExceeded = kakarot.NewCode("quota_exceeded")
 httpx.RegisterStatus(CodeQuotaExceeded, http.StatusTooManyRequests)
 return kakarot.E(CodeQuotaExceeded, "monthly quota used up", nil)
+kakarot.Is(err, CodeQuotaExceeded) // true; false for a nil error
 
 // 2. Your own body shape (e.g. RFC 9457 problem+json), app-wide; groups inherit it
 r.SetErrorEncoder(func(ctx context.Context, w http.ResponseWriter, err error) {
