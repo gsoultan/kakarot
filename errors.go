@@ -121,5 +121,18 @@ func AsError(err error) *Error {
 	return &Error{Code: CodeInternal, Message: "internal error", Cause: err}
 }
 
-// CodeOf returns the code of err, CodeInternal for non-domain errors.
-func CodeOf(err error) Code { return AsError(err).Code }
+// CodeOf returns the code of err, CodeInternal for non-domain errors. There
+// is no code for success: check err != nil first, or use Is.
+func CodeOf(err error) Code {
+	if err == nil {
+		return CodeInternal
+	}
+	return AsError(err).Code
+}
+
+// Is reports whether err is an error with code c. It is false for nil, so
+// it is safe to call on a result that may have succeeded:
+//
+//	id, err := gateway.Charge(ctx, order)
+//	declined := kakarot.Is(err, CodeDeclined)
+func Is(err error, c Code) bool { return err != nil && AsError(err).Code == c }
