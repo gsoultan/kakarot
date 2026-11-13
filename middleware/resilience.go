@@ -157,3 +157,24 @@ type bucket struct {
 
 // CodeRateLimited is returned by RateLimit. httpx maps it to 429.
 var CodeRateLimited = kakarot.NewCode("rate_limited")
+
+// LoadShed bounds the calls running at once across every operation that
+// shares the returned middleware. A call arriving when maxInFlight are
+// already running is refused at once with CodeUnavailable (HTTP 503), so an
+// overloaded process keeps answering quickly instead of queueing work it
+// cannot finish. Put it outermost, before Timeout and Retry.
+func LoadShed(maxInFlight int) kakarot.Middleware {
+	if maxInFlight <= 0 {
+		maxInFlight = 1
+	}
+	slots := make(chan struct{}, maxInFlight)
+	return func(ctx context.Context, op kakarot.Op, next kakarot.Next) error {
+		select {
+		case slots <- struct{}{}:
+			defer func() { <-slots }()
+			return next(ctx)
+		default:
+			return kakarot.E(kakarot.CodeUnavailable, "server is overloaded, retry later", nil)
+		}
+	}
+}

@@ -114,7 +114,7 @@ func TestIdempotent(t *testing.T) {
 		return "", errors.New("card declined")
 	}, middleware.Idempotent[payReq](store))
 	_, _ = failing(t.Context(), payReq{Key: "k2"})
-	if _, done, _ := store.Begin(t.Context(), ".\x00k2"); done {
+	if _, done, _ := store.Begin(t.Context(), "./k2"); done {
 		t.Fatal("failed call was stored")
 	}
 }
@@ -135,10 +135,38 @@ func TestIdempotentScopeAndLimits(t *testing.T) {
 	if _, err := charge(t.Context(), payReq{Key: strings.Repeat("x", 300)}); kakarot.CodeOf(err) != kakarot.CodeInvalid {
 		t.Fatalf("long key: %v", err)
 	}
+	if _, err := charge(t.Context(), payReq{Key: "a\x00b"}); kakarot.CodeOf(err) != kakarot.CodeInvalid {
+		t.Fatalf("control character in key: %v", err)
+	}
 	if _, err := charge(t.Context(), payReq{Key: "third"}); kakarot.CodeOf(err) != kakarot.CodeUnavailable {
 		t.Fatalf("full store: %v", err)
 	}
 	if again, err := charge(t.Context(), payReq{Key: "k"}); err != nil || again != a {
 		t.Fatalf("stored key must still replay when full: %q %v", again, err)
+	}
+}
+
+func TestLoadShed(t *testing.T) {
+	shed := middleware.LoadShed(1)
+	hold, entered := make(chan struct{}), make(chan struct{})
+	slow := kakarot.Wrap(kakarot.Op{Method: "Slow"}, func(context.Context, int) (int, error) {
+		close(entered)
+		<-hold
+		return 1, nil
+	}, shed)
+	fast := kakarot.Wrap(kakarot.Op{Method: "Fast"}, func(context.Context, int) (int, error) { return 2, nil }, shed)
+
+	done := make(chan error, 1)
+	go func() { _, err := slow(context.Background(), 0); done <- err }()
+	<-entered
+	if _, err := fast(t.Context(), 0); kakarot.CodeOf(err) != kakarot.CodeUnavailable {
+		t.Fatalf("second call was not shed: %v", err)
+	}
+	close(hold)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if v, err := fast(t.Context(), 0); err != nil || v != 2 {
+		t.Fatalf("slot not released: %v %v", v, err)
 	}
 }

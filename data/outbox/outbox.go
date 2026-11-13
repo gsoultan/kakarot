@@ -25,7 +25,7 @@ import (
 
 	"github.com/gsoultan/kakarot"
 	"github.com/gsoultan/kakarot/data"
-	"github.com/gsoultan/kakarot/data/outbox/store/outboxevent"
+	"github.com/gsoultan/kakarot/data/internal/store/outboxevent"
 	"github.com/gsoultan/storm"
 )
 

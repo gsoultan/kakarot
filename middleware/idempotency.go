@@ -37,15 +37,15 @@ const MaxIdempotencyKeyLen = 255
 // response by guessing a key.
 func Idempotent[Req Keyed, Resp any](store IdempotencyStore[Resp]) kakarot.TypedMiddleware[Req, Resp] {
 	return func(op kakarot.Op, next kakarot.Endpoint[Req, Resp]) kakarot.Endpoint[Req, Resp] {
-		scope := op.Service + "." + op.Method + "\x00"
+		scope := op.Service + "." + op.Method + "/"
 		return func(ctx context.Context, req Req) (Resp, error) {
 			key := req.IdempotencyKey()
 			if key == "" {
 				return next(ctx, req)
 			}
-			if len(key) > MaxIdempotencyKeyLen {
+			if len(key) > MaxIdempotencyKeyLen || !printable(key) {
 				var zero Resp
-				return zero, kakarot.Invalid("idempotency key too long", nil)
+				return zero, kakarot.Invalid("idempotency key must be at most 255 printable ASCII characters", nil)
 			}
 			key = scope + key
 			prev, done, err := store.Begin(ctx, key)
@@ -127,4 +127,15 @@ func (s *MemoryIdempotencyStore[Resp]) Finish(_ context.Context, key string, res
 	}
 	s.entries[key] = idemEntry[Resp]{resp: resp, done: true, expires: time.Now().Add(ttl)}
 	return nil
+}
+
+// printable reports whether s is visible ASCII, the alphabet of an HTTP
+// header value and safe for any store.
+func printable(s string) bool {
+	for i := range len(s) {
+		if s[i] < 0x21 || s[i] > 0x7e {
+			return false
+		}
+	}
+	return true
 }
