@@ -1,16 +1,12 @@
 package app_test
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -23,6 +19,7 @@ import (
 	"github.com/gsoultan/kakarot/examples/wallet/app"
 	"github.com/gsoultan/kakarot/examples/wallet/domain"
 	"github.com/gsoultan/kakarot/examples/wallet/transport"
+	"github.com/gsoultan/kakarot/kakarottest"
 	"github.com/gsoultan/kakarot/transport/grpcx"
 	"github.com/gsoultan/storm"
 	"github.com/gsoultan/storm/migrate"
@@ -88,15 +85,7 @@ func start(t *testing.T) *stack {
 		Audit:  au,
 	})
 	lis := bufconn.Listen(1 << 20)
-	servers := []kakarot.Server{&grpcx.Server{GRPC: w.GRPC, Listener: lis}, w.Consumer, w.Relay}
-	for _, s := range servers {
-		go s.Serve(context.Background())
-	}
-	t.Cleanup(func() {
-		for _, s := range servers {
-			_ = s.Shutdown(context.Background())
-		}
-	})
+	kakarottest.Serve(t, &grpcx.Server{GRPC: w.GRPC, Listener: lis}, w.Consumer, w.Relay)
 	conn, err := grpc.NewClient("passthrough:///buf",
 		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) }),
 		grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -107,39 +96,27 @@ func start(t *testing.T) *stack {
 	return &stack{t: t, http: w.HTTP, grpc: conn, audit: au}
 }
 
-// call performs an HTTP request as token and decodes the JSON answer.
+// call performs an HTTP request as token and returns the status and the
+// decoded body.
 func call[T any](s *stack, token, method, path string, body any, hdr ...string) (int, T) {
 	s.t.Helper()
-	var rd io.Reader
-	switch b := body.(type) {
-	case nil:
-	case string:
-		rd = strings.NewReader(b)
-	default:
-		raw, _ := json.Marshal(b)
-		rd = bytes.NewReader(raw)
-	}
-	req := httptest.NewRequest(method, path, rd)
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	for i := 0; i+1 < len(hdr); i += 2 {
-		req.Header.Set(hdr[i], hdr[i+1])
-	}
-	w := httptest.NewRecorder()
-	s.http.ServeHTTP(w, req)
-	var out T
-	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil && w.Body.Len() > 0 {
-		s.t.Fatalf("%s %s: %d %s", method, path, w.Code, w.Body)
-	}
-	return w.Code, out
+	res := kakarottest.Do[T](s.t, s.http, method, path, body, as(token, hdr)...)
+	return res.Status, res.Body
 }
 
-type errBody struct {
-	Error struct {
-		Code   string            `json:"code"`
-		Fields map[string]string `json:"fields"`
-	} `json:"error"`
+// refused performs a request that is expected to fail and returns the status
+// and the decoded error.
+func refused(s *stack, token, method, path string, body any, hdr ...string) (int, kakarottest.ErrorBody) {
+	s.t.Helper()
+	res := kakarottest.Do[kakarottest.None](s.t, s.http, method, path, body, as(token, hdr)...)
+	return res.Status, res.Error
+}
+
+func as(token string, hdr []string) []string {
+	if token == "" {
+		return hdr
+	}
+	return append([]string{"Authorization", "Bearer " + token}, hdr...)
 }
 
 func (s *stack) open(token string, balance int64) domain.Account {
@@ -190,10 +167,7 @@ func TestLiveTransferOverHTTP(t *testing.T) {
 	}
 
 	// The event reaches the audit handler through outbox, relay and queue.
-	deadline := time.Now().Add(5 * time.Second)
-	for len(s.audit.ids()) == 0 && time.Now().Before(deadline) {
-		time.Sleep(20 * time.Millisecond)
-	}
+	kakarottest.Eventually(t, 5*time.Second, "the transfer is audited", func() bool { return len(s.audit.ids()) > 0 })
 	if ids := s.audit.ids(); len(ids) != 1 || ids[0] != done.ID {
 		t.Fatalf("audited = %v", ids)
 	}
@@ -203,29 +177,29 @@ func TestLiveRefusals(t *testing.T) {
 	s := start(t)
 	alice, bob := s.open("alice-secret", 50), s.open("bob-secret", 0)
 
-	if code, _ := call[errBody](s, "", "GET", "/accounts/"+alice.ID, nil); code != http.StatusUnauthorized {
+	if code, _ := refused(s, "", "GET", "/accounts/"+alice.ID, nil); code != http.StatusUnauthorized {
 		t.Fatalf("no token: %d", code)
 	}
-	if code, _ := call[errBody](s, "wrong", "GET", "/accounts/"+alice.ID, nil); code != http.StatusUnauthorized {
+	if code, _ := refused(s, "wrong", "GET", "/accounts/"+alice.ID, nil); code != http.StatusUnauthorized {
 		t.Fatalf("bad token: %d", code)
 	}
 	// Bob cannot see or spend from Alice's account, and cannot tell it exists.
-	if code, e := call[errBody](s, "bob-secret", "GET", "/accounts/"+alice.ID, nil); code != http.StatusNotFound {
+	if code, e := refused(s, "bob-secret", "GET", "/accounts/"+alice.ID, nil); code != http.StatusNotFound {
 		t.Fatalf("foreign read: %d %+v", code, e)
 	}
-	if code, _ := call[errBody](s, "bob-secret", "POST", "/transfers", domain.Transfer{From: alice.ID, To: bob.ID, Amount: 1}); code != http.StatusNotFound {
+	if code, _ := refused(s, "bob-secret", "POST", "/transfers", domain.Transfer{From: alice.ID, To: bob.ID, Amount: 1}); code != http.StatusNotFound {
 		t.Fatalf("foreign spend: %d", code)
 	}
-	if code, _ := call[errBody](s, "bob-secret", "GET", "/accounts/"+alice.ID+"/entries", nil); code != http.StatusNotFound {
+	if code, _ := refused(s, "bob-secret", "GET", "/accounts/"+alice.ID+"/entries", nil); code != http.StatusNotFound {
 		t.Fatalf("foreign ledger: %d", code)
 	}
 	// The wallet's own error code, with its own status.
-	code, e := call[errBody](s, "alice-secret", "POST", "/transfers", domain.Transfer{From: alice.ID, To: bob.ID, Amount: 51})
-	if code != http.StatusUnprocessableEntity || e.Error.Code != "insufficient_funds" {
+	code, e := refused(s, "alice-secret", "POST", "/transfers", domain.Transfer{From: alice.ID, To: bob.ID, Amount: 51})
+	if code != http.StatusUnprocessableEntity || e.Code != "insufficient_funds" {
 		t.Fatalf("overdraft: %d %+v", code, e)
 	}
-	code, e = call[errBody](s, "alice-secret", "POST", "/transfers", domain.Transfer{From: alice.ID, To: alice.ID, Amount: 0})
-	if code != http.StatusBadRequest || e.Error.Fields["amount"] == "" || e.Error.Fields["to"] == "" {
+	code, e = refused(s, "alice-secret", "POST", "/transfers", domain.Transfer{From: alice.ID, To: alice.ID, Amount: 0})
+	if code != http.StatusBadRequest || e.Fields["amount"] == "" || e.Fields["to"] == "" {
 		t.Fatalf("validation: %d %+v", code, e)
 	}
 	if a, b := s.balance("alice-secret", alice.ID), s.balance("bob-secret", bob.ID); a != 50 || b != 0 {
@@ -247,7 +221,7 @@ func TestLiveIdempotentTransfer(t *testing.T) {
 		t.Fatalf("a retried transfer moved money twice: alice=%d", a)
 	}
 	// Bob guessing Alice's key gets nothing of hers: it is his own key.
-	code, _ := call[errBody](s, "bob-secret", "POST", "/transfers", in, "Idempotency-Key", "pay-1")
+	code, _ := refused(s, "bob-secret", "POST", "/transfers", in, "Idempotency-Key", "pay-1")
 	if code != http.StatusNotFound {
 		t.Fatalf("another caller replayed the transfer: %d", code)
 	}

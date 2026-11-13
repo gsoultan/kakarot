@@ -10,6 +10,7 @@ import (
 	"github.com/gsoultan/kakarot/auth"
 	"github.com/gsoultan/kakarot/examples/wallet/domain"
 	"github.com/gsoultan/kakarot/examples/wallet/usecase"
+	"github.com/gsoultan/kakarot/kakarottest"
 )
 
 // memAccounts is an in-memory Accounts: the business rules are tested with
@@ -60,21 +61,21 @@ func (m *memAccounts) Entries(context.Context, string, string, int) (kakarot.Pag
 	return kakarot.Page[domain.Entry]{Items: m.entries}, nil
 }
 
-// snapshotTx gives the fake real transaction semantics: a failed function
-// leaves no change behind.
-type snapshotTx struct{ m *memAccounts }
-
-func (t snapshotTx) Within(ctx context.Context, fn func(context.Context) error) error {
-	rows := map[string]domain.Account{}
-	for k, v := range t.m.rows {
-		rows[k] = v
+// tx gives the fake real transaction semantics: kakarottest.Tx calls the
+// hooks, and a failed function leaves no change behind.
+func (m *memAccounts) tx() *kakarottest.Tx {
+	var rows map[string]domain.Account
+	var entries []domain.Entry
+	return &kakarottest.Tx{
+		OnBegin: func() {
+			rows = map[string]domain.Account{}
+			for k, v := range m.rows {
+				rows[k] = v
+			}
+			entries = append([]domain.Entry{}, m.entries...)
+		},
+		OnRollback: func() { m.rows, m.entries = rows, entries },
 	}
-	entries := append([]domain.Entry{}, t.m.entries...)
-	if err := fn(ctx); err != nil {
-		t.m.rows, t.m.entries = rows, entries
-		return err
-	}
-	return nil
 }
 
 type memEvents struct{ done []domain.TransferDone }
@@ -94,7 +95,7 @@ func fixture() (*memAccounts, *memEvents, *usecase.Transfer) {
 		"b": {ID: "b", Owner: "bob", Balance: 5},
 	}}
 	ev := &memEvents{}
-	return m, ev, &usecase.Transfer{Accounts: m, Events: ev, Tx: snapshotTx{m}}
+	return m, ev, &usecase.Transfer{Accounts: m, Events: ev, Tx: m.tx()}
 }
 
 func TestTransferMovesMoneyAndEmitsEvent(t *testing.T) {
@@ -156,7 +157,7 @@ func TestTransferIsAllOrNothing(t *testing.T) {
 
 func TestImportStopsAtFirstBadDeposit(t *testing.T) {
 	m, _, _ := fixture()
-	imp := &usecase.ImportDeposits{Deposit: &usecase.Deposit{Accounts: m, Tx: snapshotTx{m}}}
+	imp := &usecase.ImportDeposits{Deposit: &usecase.Deposit{Accounts: m, Tx: m.tx()}}
 	res, err := imp.Stream(as(t, "alice"), kakarot.SliceStream([]domain.Deposit{
 		{AccountID: "a", Amount: 10},
 		{AccountID: "a", Amount: 5},
