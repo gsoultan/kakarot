@@ -33,7 +33,7 @@ The core has no dependencies outside the Go standard library. Anything that pull
 | `github.com/gsoultan/kakarot/otelx` | OpenTelemetry tracing and metrics | opentelemetry-go |
 | `github.com/gsoultan/kakarot/cmd/kakarot` | CLI: `new`, `gen` | x/tools |
 | `examples/orders` | a complete service on every layer | all of the above |
-| `examples/wallet` | a money-transfer service wired in plain Go: auth, idempotent transfers, ledger, outbox, gRPC | core, `data`, `grpcx` |
+| `examples/wallet` | a money-transfer service: auth, idempotent transfers, ledger, outbox, gRPC | all of the above |
 
 ```text
 endpoint.go stream.go errors.go   core: Endpoint, streams, Middleware, Wrap, Decorate, Usecase, Error

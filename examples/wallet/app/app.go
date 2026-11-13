@@ -90,7 +90,7 @@ func Build(c Config) *Wallet {
 	})
 
 	// One set of typed endpoints for every transport.
-	eps := endpoint.New(svc)
+	eps := endpoint.MakeWalletEndpoints(svc)
 	// A retried transfer with the same Idempotency-Key must not move money
 	// twice, whichever instance or transport receives the retry. Keys are
 	// scoped to the caller, so a guessed key replays nothing.
@@ -113,18 +113,18 @@ func Build(c Config) *Wallet {
 	r := httpx.NewRouter()
 	r.Use(auth.Bearer(verify))
 	r.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
-	transport.HTTP(r, eps, api)
+	transport.RegisterWalletHTTP(r, eps, api)
 	r.ServeOpenAPI("GET /openapi.json", httpx.Info{Title: "wallet", Version: "0.1.0"})
 
 	unary, stream := grpcx.Bearer(verify)
 	gs := grpc.NewServer(grpc.ChainUnaryInterceptor(unary), grpc.ChainStreamInterceptor(stream))
-	transport.GRPC(gs, eps, api)
+	transport.RegisterWalletGRPC(gs, eps, api)
 
 	// transfer.completed: outbox row -> relay -> broker -> AuditTransfer.
 	// queue.Memory keeps it in one process; swap in a broker client later.
 	broker := &queue.Memory{}
 	consumer := &queue.Consumer{Service: "wallet", Source: broker, Logger: log}
-	transport.Queue(consumer, eps, middleware.Default(log, 30*time.Second))
+	transport.RegisterWalletQueue(consumer, eps, middleware.Default(log, 30*time.Second))
 	relay := &outbox.Relay{DB: c.DB, Logger: log, Publisher: outbox.ToQueue(broker), Interval: 200 * time.Millisecond}
 
 	return &Wallet{HTTP: r, GRPC: gs, Consumer: consumer, Relay: relay}
