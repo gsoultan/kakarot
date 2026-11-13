@@ -26,6 +26,7 @@ import (
 	"github.com/gsoultan/kakarot"
 	"github.com/gsoultan/kakarot/data"
 	"github.com/gsoultan/kakarot/data/internal/store/outboxevent"
+	"github.com/gsoultan/kakarot/queue"
 	"github.com/gsoultan/storm"
 )
 
@@ -57,6 +58,23 @@ func (t Topic[T]) Decode(m Message) (T, error) {
 		return v, kakarot.E(kakarot.CodeInvalid, "decode event", err)
 	}
 	return v, nil
+}
+
+// Queue returns the same topic for the consuming side (package queue).
+func (t Topic[T]) Queue() queue.Topic[T] { return queue.Topic[T](t) }
+
+// QueuePublisher is the publishing side of a broker that speaks
+// queue.Message; queue.Memory is one.
+type QueuePublisher interface {
+	Publish(ctx context.Context, m queue.Message) error
+}
+
+// ToQueue adapts a queue broker to a Publisher, so the relay delivers
+// outbox events to queue consumers.
+func ToQueue(b QueuePublisher) Publisher {
+	return PublisherFunc(func(ctx context.Context, m Message) error {
+		return b.Publish(ctx, queue.Message{ID: m.ID, Topic: m.Topic, Key: m.Key, Payload: m.Payload, Attempts: m.Attempts})
+	})
 }
 
 // Message is an outbox event as handed to a Publisher.

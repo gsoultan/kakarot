@@ -23,12 +23,17 @@ import (
 //kakarot:service chat
 type ChatService interface {
 	//kakarot:http POST /messages
+	//kakarot:grpc
+	//kakarot:queue chat.incoming
 	Send(ctx context.Context, in domain.Msg) (domain.Ack, error)
 	//kakarot:http GET /messages
+	//kakarot:grpc
 	Tail(ctx context.Context, in domain.Room) iter.Seq2[domain.Msg, error]
 	//kakarot:http POST /messages/bulk
+	//kakarot:grpc
 	Bulk(ctx context.Context, in iter.Seq2[domain.Msg, error]) (domain.Ack, error)
 	//kakarot:http GET /ws
+	//kakarot:grpc
 	Live(ctx context.Context, in iter.Seq2[domain.Msg, error], send func(domain.Msg) error) error
 	Internal(ctx context.Context, in domain.Room) (domain.Ack, error)
 }
@@ -70,11 +75,13 @@ func TestGenerateCompiles(t *testing.T) {
 	}
 	// Reuse the wsx module's sums so the build needs no network.
 	write("go.mod", "module example.com/demo\n\ngo 1.27.4\n\n"+
-		"require (\n\tgithub.com/gsoultan/kakarot v0.0.0\n\tgithub.com/gsoultan/kakarot/transport/wsx v0.0.0\n\tgithub.com/coder/websocket v1.8.15\n)\n\n"+
+		"require (\n\tgithub.com/gsoultan/kakarot v0.0.0\n\tgithub.com/gsoultan/kakarot/transport/wsx v0.0.0\n\tgithub.com/gsoultan/kakarot/transport/grpcx v0.0.0\n)\n\n"+
+		"replace github.com/gsoultan/kakarot/transport/grpcx => "+filepath.Join(root, "transport", "grpcx")+"\n"+
 		"replace github.com/gsoultan/kakarot => "+root+"\n"+
 		"replace github.com/gsoultan/kakarot/transport/wsx => "+filepath.Join(root, "transport", "wsx")+"\n")
 	sum, _ := os.ReadFile(filepath.Join(root, "transport", "wsx", "go.sum"))
-	write("go.sum", string(sum))
+	sum2, _ := os.ReadFile(filepath.Join(root, "transport", "grpcx", "go.sum"))
+	write("go.sum", string(sum)+string(sum2))
 	write("domain/domain.go", domainSrc)
 	write("service/service.go", svcSrc)
 
@@ -106,10 +113,38 @@ func TestGenerateCompiles(t *testing.T) {
 			t.Errorf("http_gen.go lacks %q:\n%s", want, tr)
 		}
 	}
-	if strings.Contains(string(tr), "Internal") {
+	gr, _ := os.ReadFile(filepath.Join(dir, "transport", "grpc_gen.go"))
+	for _, want := range []string{
+		`const ChatGRPCService = "chat.ChatService"`,
+		`grpcx.AddUnary(svc, "Send", eps.Send)`,
+		`grpcx.AddServerStream(svc, "Tail", eps.Tail)`,
+		`grpcx.AddClientStream(svc, "Bulk", eps.Bulk)`,
+		`grpcx.AddBidi(svc, "Live", eps.Live)`,
+		`Send: grpcx.Invoke[domain.Msg, domain.Ack](cc, ChatGRPCService, "Send")`,
+		`Live: grpcx.Duplex[domain.Msg, domain.Msg](cc, ChatGRPCService, "Live")`,
+	} {
+		if !strings.Contains(string(gr), want) {
+			t.Errorf("grpc_gen.go lacks %q:\n%s", want, gr)
+		}
+	}
+	qu, _ := os.ReadFile(filepath.Join(dir, "transport", "queue_gen.go"))
+	for _, want := range []string{
+		`SendTopic queue.Topic[domain.Msg] = "chat.incoming"`,
+		`queue.Handle(c, SendTopic, "Send", eps.Send, mws...)`,
+	} {
+		if !strings.Contains(string(qu), want) {
+			t.Errorf("queue_gen.go lacks %q:\n%s", want, qu)
+		}
+	}
+	if strings.Contains(string(tr)+string(gr)+string(qu), "Internal") {
 		t.Error("method without //kakarot:http was routed")
 	}
 
+	tidy := exec.Command("go", "mod", "tidy")
+	tidy.Dir = dir
+	if out, err := tidy.CombinedOutput(); err != nil {
+		t.Fatalf("go mod tidy: %v\n%s", err, out)
+	}
 	cmd := exec.Command("go", "build", "-mod=mod", "./...")
 	cmd.Dir = dir
 	if out, err := cmd.CombinedOutput(); err != nil {

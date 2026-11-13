@@ -5,7 +5,6 @@ import (
 	"cmp"
 	"errors"
 	"fmt"
-	"go/format"
 	"go/types"
 	"os"
 	"path/filepath"
@@ -14,6 +13,7 @@ import (
 	"text/template"
 
 	"golang.org/x/tools/go/packages"
+	goimports "golang.org/x/tools/imports"
 )
 
 type method struct {
@@ -22,6 +22,8 @@ type method struct {
 	In, Out  string
 	Validate bool
 	HTTP     string // "GET /orders/{id}", empty when not exposed
+	GRPC     bool   // exposed on the interface-first gRPC service
+	Queue    string // topic consumed by this method, empty when none
 }
 
 type service struct {
@@ -76,21 +78,50 @@ func generate(dir string) error {
 	}); err != nil {
 		return err
 	}
-	if !anyHTTP {
-		return nil
+	if anyHTTP {
+		im := newImports()
+		im.add("github.com/gsoultan/kakarot", "kakarot")
+		im.add("github.com/gsoultan/kakarot/transport/httpx", "httpx")
+		im.add(base+"/endpoint", "endpoint")
+		if anyBidi {
+			im.add("github.com/gsoultan/kakarot/transport/wsx", "wsx")
+		}
+		if err := writeGo(filepath.Join(dir, "..", "transport", "http_gen.go"), httpTmpl, map[string]any{
+			"Services": rendered, "Imports": im.list(),
+		}); err != nil {
+			return err
+		}
 	}
-
-	// transport/http_gen.go
-	trIm := newImports()
-	trIm.add("github.com/gsoultan/kakarot", "kakarot")
-	trIm.add("github.com/gsoultan/kakarot/transport/httpx", "httpx")
-	trIm.add(base+"/endpoint", "endpoint")
-	if anyBidi {
-		trIm.add("github.com/gsoultan/kakarot/transport/wsx", "wsx")
+	has := func(f func(method) bool) bool {
+		return slices.ContainsFunc(rendered, func(s service) bool { return slices.ContainsFunc(s.Methods, f) })
 	}
-	return writeGo(filepath.Join(dir, "..", "transport", "http_gen.go"), httpTmpl, map[string]any{
-		"Services": rendered, "Imports": trIm.list(),
-	})
+	if has(func(m method) bool { return m.GRPC }) {
+		im := newImports()
+		forGRPC := renderServices(pkg, svcs, base+"/transport", im) // the client names request types
+		im.add("github.com/gsoultan/kakarot/transport/grpcx", "grpcx")
+		im.add("google.golang.org/grpc", "grpc")
+		im.add(base+"/endpoint", "endpoint")
+		if err := writeGo(filepath.Join(dir, "..", "transport", "grpc_gen.go"), grpcTmpl, map[string]any{
+			"Services": forGRPC, "Imports": im.list(),
+		}); err != nil {
+			return err
+		}
+	}
+	if has(func(m method) bool { return m.Queue != "" }) {
+		// Topics are typed by the method's request, so this file names the
+		// request types; imports the template ends up not using are pruned.
+		im := newImports()
+		forQueue := renderServices(pkg, svcs, base+"/transport", im)
+		im.add("github.com/gsoultan/kakarot", "kakarot")
+		im.add("github.com/gsoultan/kakarot/queue", "queue")
+		im.add(base+"/endpoint", "endpoint")
+		if err := writeGo(filepath.Join(dir, "..", "transport", "queue_gen.go"), queueTmpl, map[string]any{
+			"Services": forQueue, "Imports": im.list(),
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func writeGo(path string, tmpl *template.Template, data map[string]any) error {
@@ -98,7 +129,8 @@ func writeGo(path string, tmpl *template.Template, data map[string]any) error {
 	if err := tmpl.Execute(&buf, data); err != nil {
 		return err
 	}
-	src, err := format.Source(buf.Bytes())
+	// Process formats and drops imports the file does not use.
+	src, err := goimports.Process(path, buf.Bytes(), &goimports.Options{Comments: true, TabIndent: true, TabWidth: 8, FormatOnly: false})
 	if err != nil {
 		return fmt.Errorf("kakarot gen: %s: %w\n%s", path, err, buf.Bytes())
 	}
@@ -142,7 +174,13 @@ func findServices(pkg *packages.Package) ([]serviceDecl, error) {
 			if err != nil {
 				return nil, fmt.Errorf("%s.%s: %w", name, m.Name(), err)
 			}
-			md.HTTP, _ = directive(comments[name+"."+m.Name()], "kakarot:http")
+			doc := comments[name+"."+m.Name()]
+			md.HTTP, _ = directive(doc, "kakarot:http")
+			_, md.GRPC = directive(doc, "kakarot:grpc")
+			md.Queue, _ = directive(doc, "kakarot:queue")
+			if md.Queue != "" && md.Kind != "Endpoint" {
+				return nil, fmt.Errorf("%s.%s: //kakarot:queue needs the shape (ctx, Msg) (Resp, error)", name, m.Name())
+			}
 			sd.Methods = append(sd.Methods, md)
 		}
 		slices.SortFunc(sd.Methods, func(a, b methodDecl) int { return int(a.Pos - b.Pos) })
@@ -162,6 +200,8 @@ type methodDecl struct {
 	In, Out  types.Type
 	Validate bool
 	HTTP     string
+	GRPC     bool
+	Queue    string
 	Pos      int
 }
 
@@ -277,7 +317,7 @@ func renderServices(pkg *packages.Package, svcs []serviceDecl, dest string, im *
 		rs := service{Name: s.Name, Short: cmp.Or(strings.TrimSuffix(s.Name, "Service"), s.Name), Group: s.Group}
 		for _, m := range s.Methods {
 			rs.Methods = append(rs.Methods, method{
-				Name: m.Name, Kind: m.Kind, Validate: m.Validate, HTTP: m.HTTP,
+				Name: m.Name, Kind: m.Kind, Validate: m.Validate, HTTP: m.HTTP, GRPC: m.GRPC, Queue: m.Queue,
 				In: types.TypeString(m.In, q), Out: types.TypeString(m.Out, q),
 			})
 		}
@@ -287,3 +327,29 @@ func renderServices(pkg *packages.Package, svcs []serviceDecl, dest string, im *
 	im.add("github.com/gsoultan/kakarot", "kakarot")
 	return out
 }
+
+// HasGRPC reports whether any method is exposed over gRPC.
+func (s service) HasGRPC() bool {
+	return slices.ContainsFunc(s.Methods, func(m method) bool { return m.GRPC })
+}
+
+// HasQueue reports whether any method consumes a topic.
+func (s service) HasQueue() bool {
+	return slices.ContainsFunc(s.Methods, func(m method) bool { return m.Queue != "" })
+}
+
+// GRPCName is the gRPC service name, "<group>.<Interface>".
+func (s service) GRPCName() string { return s.Group + "." + s.Name }
+
+var grpcFuncs = map[string][2]string{
+	"Endpoint":     {"AddUnary", "Invoke"},
+	"ServerStream": {"AddServerStream", "Receive"},
+	"ClientStream": {"AddClientStream", "Send"},
+	"BidiStream":   {"AddBidi", "Duplex"},
+}
+
+// GRPCAdd is the grpcx function that serves this method's kind.
+func (m method) GRPCAdd() string { return grpcFuncs[m.Kind][0] }
+
+// GRPCCall is the grpcx function that calls this method's kind.
+func (m method) GRPCCall() string { return grpcFuncs[m.Kind][1] }
