@@ -1,0 +1,70 @@
+package transport_test
+
+import (
+	"context"
+	"net/http"
+	"strconv"
+	"testing"
+
+	"github.com/gsoultan/kakarot"
+	"github.com/gsoultan/kakarot/kakarottest"
+	"github.com/gsoultan/kakarot/transport/httpx"
+
+	"[[.Module]]/domain"
+	"[[.Module]]/endpoint"
+	"[[.Module]]/service"
+	"[[.Module]]/transport"
+	"[[.Module]]/usecase"
+)
+
+type memNotes struct{ rows map[string]domain.Note }
+
+func (m *memNotes) Create(_ context.Context, n *domain.Note) error {
+	n.ID = strconv.Itoa(len(m.rows) + 1)
+	m.rows[n.ID] = *n
+	return nil
+}
+
+func (m *memNotes) Get(_ context.Context, id string) (domain.Note, error) {
+	n, ok := m.rows[id]
+	if !ok {
+		return domain.Note{}, kakarot.NotFound("note", id)
+	}
+	return n, nil
+}
+
+// api is the whole service over HTTP with an in-memory repository: routing,
+// decoding, validation, usecases and error mapping, with no database.
+func api() http.Handler {
+	notes := &memNotes{rows: map[string]domain.Note{}}
+	svc := service.New(service.Usecases{
+		Create: &usecase.CreateNote{Notes: notes},
+		Get:    &usecase.GetNote{Notes: notes},
+	})
+	r := httpx.NewRouter()
+	transport.RegisterNoteHTTP(r, endpoint.MakeNoteEndpoints(svc))
+	return r
+}
+
+func TestNotesOverHTTP(t *testing.T) {
+	h := api()
+	created := kakarottest.Do[domain.Note](t, h, "POST", "/notes", domain.CreateNote{Title: "hello"})
+	if created.Status != http.StatusCreated || created.Body.ID == "" {
+		t.Fatalf("create: %d %s", created.Status, created.Raw)
+	}
+	got := kakarottest.Do[domain.Note](t, h, "GET", "/notes/"+created.Body.ID, nil)
+	if got.Status != http.StatusOK || got.Body.Title != "hello" {
+		t.Fatalf("get: %d %s", got.Status, got.Raw)
+	}
+}
+
+func TestInvalidAndMissingNotes(t *testing.T) {
+	h := api()
+	bad := kakarottest.Do[domain.Note](t, h, "POST", "/notes", domain.CreateNote{})
+	if bad.Status != http.StatusBadRequest || bad.Error.Fields["title"] != "required" {
+		t.Fatalf("invalid: %d %+v", bad.Status, bad.Error)
+	}
+	if res := kakarottest.Do[domain.Note](t, h, "GET", "/notes/missing", nil); res.Status != http.StatusNotFound || res.Error.Code != "not_found" {
+		t.Fatalf("missing: %d %+v", res.Status, res.Error)
+	}
+}

@@ -170,3 +170,24 @@ func TestLoadShed(t *testing.T) {
 		t.Fatalf("slot not released: %v %v", v, err)
 	}
 }
+
+type whoKey struct{}
+
+func TestIdempotentForScopesKeysToTheCaller(t *testing.T) {
+	store := &middleware.MemoryIdempotencyStore[string]{}
+	runs := 0
+	pay := kakarot.Decorate(kakarot.Op{Service: "pay", Method: "Charge"},
+		func(ctx context.Context, r payReq) (string, error) {
+			runs++
+			return "receipt of " + ctx.Value(whoKey{}).(string), nil
+		},
+		middleware.IdempotentFor[payReq](store, func(ctx context.Context) string { return ctx.Value(whoKey{}).(string) }))
+	as := func(who string) context.Context { return context.WithValue(t.Context(), whoKey{}, who) }
+
+	a1, _ := pay(as("alice"), payReq{Key: "k"})
+	a2, _ := pay(as("alice"), payReq{Key: "k"})
+	b, _ := pay(as("bob"), payReq{Key: "k"}) // same key, other caller
+	if a1 != "receipt of alice" || a2 != a1 || b != "receipt of bob" || runs != 2 {
+		t.Fatalf("a1=%q a2=%q b=%q runs=%d", a1, a2, b, runs)
+	}
+}

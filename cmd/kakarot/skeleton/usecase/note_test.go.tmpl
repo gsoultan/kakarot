@@ -1,0 +1,51 @@
+package usecase_test
+
+import (
+	"context"
+	"strconv"
+	"testing"
+
+	"github.com/gsoultan/kakarot"
+	"github.com/gsoultan/kakarot/kakarottest"
+
+	"[[.Module]]/domain"
+	"[[.Module]]/usecase"
+)
+
+// memNotes is an in-memory NoteRepository. Usecases depend only on ports, so
+// their rules are tested with no database.
+type memNotes struct{ rows map[string]domain.Note }
+
+func (m *memNotes) Create(_ context.Context, n *domain.Note) error {
+	if m.rows == nil {
+		m.rows = map[string]domain.Note{}
+	}
+	n.ID = strconv.Itoa(len(m.rows) + 1)
+	m.rows[n.ID] = *n
+	return nil
+}
+
+func (m *memNotes) Get(_ context.Context, id string) (domain.Note, error) {
+	n, ok := m.rows[id]
+	if !ok {
+		return domain.Note{}, kakarot.NotFound("note", id)
+	}
+	return n, nil
+}
+
+func TestCreateThenGet(t *testing.T) {
+	notes := &memNotes{}
+	created, err := (&usecase.CreateNote{Notes: notes}).Execute(t.Context(), domain.CreateNote{Title: "hello", Body: "world"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := (&usecase.GetNote{Notes: notes}).Execute(t.Context(), domain.GetNote{ID: created.ID})
+	if err != nil || got.Title != "hello" {
+		t.Fatalf("got %+v, err %v", got, err)
+	}
+}
+
+func TestGetUnknownNote(t *testing.T) {
+	_, err := (&usecase.GetNote{Notes: &memNotes{}}).Execute(t.Context(), domain.GetNote{ID: "missing"})
+	kakarottest.WantCode(t, err, kakarot.CodeNotFound)
+}

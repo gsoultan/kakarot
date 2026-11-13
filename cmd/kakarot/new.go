@@ -70,6 +70,8 @@ func scaffold(module, dir string) error {
   go get -tool github.com/gsoultan/kakarot/cmd/kakarot github.com/gsoultan/storm/cmd/storm
   go generate ./...
   go mod tidy
+  go test ./...
+  go tool kakarot check
   STORM_DSN=postgres://localhost/%s AUTO_MIGRATE=1 go run ./cmd/server
 `, dir, dir, name)
 	return nil

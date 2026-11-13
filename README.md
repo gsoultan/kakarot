@@ -16,6 +16,8 @@ $ cd notes
 $ go get -tool github.com/gsoultan/kakarot/cmd/kakarot github.com/gsoultan/storm/cmd/storm
 $ go generate ./...
 $ go mod tidy
+$ go test ./...            # the new project's tests pass with no database
+$ go tool kakarot check    # layer rules, //kakarot: comments, generated code is current
 $ STORM_DSN=postgres://localhost/notes AUTO_MIGRATE=1 go run ./cmd/server
 $ curl -XPOST localhost:8080/notes -d '{"title":"hi"}'
 ```
@@ -26,22 +28,25 @@ The core has no dependencies outside the Go standard library. Anything that pull
 
 | Module | Contents | Depends on |
 |---|---|---|
-| `github.com/gsoultan/kakarot` | core, `middleware`, `auth`, `queue`, `transport/httpx` | standard library only |
+| `github.com/gsoultan/kakarot` | core, `middleware`, `auth`, `queue`, `transport/httpx`, `kakarottest` | standard library only |
 | `github.com/gsoultan/kakarot/transport/grpcx` | gRPC: interface-first service and clients, proto adapters | grpc-go |
 | `github.com/gsoultan/kakarot/transport/wsx` | WebSocket streams | coder/websocket |
 | `github.com/gsoultan/kakarot/data` | storm `TxManager`, error mapping, `outbox`, `idempotency` | storm |
 | `github.com/gsoultan/kakarot/otelx` | OpenTelemetry tracing and metrics | opentelemetry-go |
-| `github.com/gsoultan/kakarot/cmd/kakarot` | CLI: `new`, `gen` | x/tools |
+| `github.com/gsoultan/kakarot/cmd/kakarot` | CLI: `new`, `gen`, `check` | x/tools |
 | `examples/orders` | a complete service on every layer | all of the above |
+| `examples/checkout` | a synchronous request followed by asynchronous payment, shipping, compensation and expiry | core, `data` |
+| `examples/wallet` | a money-transfer service: auth, idempotent transfers, ledger, outbox, gRPC | all of the above |
 
 ```text
 endpoint.go stream.go errors.go   core: Endpoint, streams, Middleware, Wrap, Decorate, Usecase, Error
-app.go page.go                    App (graceful run of many servers), keyset Page / cursors
+app.go job.go page.go             App (graceful run of many servers), Job (scheduled work), keyset Page / cursors
 transport/httpx/                  HTTP: Router, Handle, Stream (SSE/NDJSON), Upload, OpenAPI 3.1
 middleware/                       Recover, Logging, Timeout, Validated, Retry, CircuitBreaker,
                                   RateLimit, LoadShed, Idempotent
 auth/                             typed principal in context, Bearer, Require
 queue/                            message consumers on typed topics, in-process broker
+kakarottest/                      test kit: Tx, Do, WantCode, Eventually, Serve, Publish, Clock
 ```
 
 ## The layers
@@ -110,6 +115,85 @@ The method shape picks the kind:
 | `(ctx, iter.Seq2[In, error], func(Out) error) error` | `BidiStream` | `wsx.Handle` (WebSocket) | bidirectional |
 
 Requests with a `Validate() error` method are wrapped with `middleware.Validated`, so validation runs on every transport. A method with no transport comment gets an endpoint but no binding. Dependency wiring is not generated; `main.go` stays explicit Go.
+
+A mistake in a comment is an error with the place and the fix, never a silently missing route:
+
+```text
+service/service.go:21: OrderService.GetOrder: unknown directive //kakarot:htp (did you mean //kakarot:http?); known directives are ...
+```
+
+## Checking a project
+
+`kakarot check` verifies what the compiler cannot. Run it before a commit and in CI:
+
+```console
+$ go tool kakarot check
+usecase/place_order.go:6: usecase must not import net/http: business rules reach the outside only through ports (interfaces declared in usecase)
+transport/http_gen.go: out of date with the service interface: run go generate ./...
+kakarot check: 2 problem(s)
+```
+
+It checks three things:
+
+- **Layer rules.** Each layer imports only the layers below it. `domain`, `usecase` and `service` import no transport and no database library.
+- **Comments.** Every `//kakarot:` line is a known directive with valid arguments.
+- **Generated code.** `endpoint/` and `transport/` match the service interface. Nothing is written.
+
+## Testing
+
+Every layer is testable on its own, and only repository tests need a database. `kakarottest` (standard library only) removes the repetitive parts:
+
+```go
+// A usecase: in-memory port, no database.
+func TestTransferRollsBackOnFailure(t *testing.T) {
+    repo := newMemAccounts()
+    tx := &kakarottest.Tx{OnBegin: repo.snapshot, OnRollback: repo.restore}
+    uc := &usecase.Transfer{Accounts: repo, Tx: tx}
+
+    _, err := uc.Execute(t.Context(), domain.Transfer{From: "a", To: "missing", Amount: 10})
+
+    kakarottest.WantCode(t, err, kakarot.CodeNotFound)
+    if repo.balance("a") != 100 || tx.Rollbacks() != 1 { ... }
+}
+
+// The API: router, decoding, validation, usecases and error mapping, still no database.
+res := kakarottest.Do[domain.Order](t, router, "POST", "/orders", domain.PlaceOrder{...}, "Idempotency-Key", "cart-1")
+if res.Status != http.StatusCreated || res.Body.Total != 2700 { ... }
+bad := kakarottest.Do[kakarottest.None](t, router, "POST", "/orders", domain.PlaceOrder{})
+if bad.Error.Fields["items"] == "" { ... }
+
+// Asynchronous work: run the consumer for the test, publish, wait for the result.
+kakarottest.Serve(t, consumer, relay)
+err := kakarottest.Publish(t, broker, transport.ChargePaymentTopic, order.ID, domain.OrderPlaced{OrderID: order.ID})
+kakarottest.Eventually(t, 5*time.Second, "order shipped", func() bool { return status(order.ID) == "shipped" })
+
+// Time: a clock the test moves by hand.
+clock := kakarottest.NewClock(start)
+expire := &usecase.ExpireOrders{After: 15 * time.Minute, Now: clock.Now}
+clock.Advance(time.Hour)
+```
+
+| Helper | Use |
+|---|---|
+| `Tx` | a `TxManager` that counts commits and rollbacks, can fail at commit, and calls hooks so a fake repository can roll back |
+| `Do[T]` | one HTTP request against any handler; typed body, status, headers and decoded error |
+| `WantCode`, `WantField` | assert an error's code or a field problem |
+| `Eventually` | wait for an asynchronous result, with a clear failure message |
+| `Serve` | run servers (consumer, relay, job) until the test ends |
+| `Publish` | send a typed message to `queue.Memory` and get the handler's error back |
+| `Clock` | a manual clock for code that takes `func() time.Time` |
+
+Three things in the design make test-first work practical: usecases depend only on interfaces they declare, a service method is callable as a plain function, and a scaffolded project starts with passing usecase and API tests to copy.
+
+## Coding agents
+
+kakarot is built to be changed safely by tools as well as by people:
+
+- **`AGENTS.md`** in this repository and in every scaffolded project states the layers, the rules, the commands and the steps to add an operation.
+- **One place per kind of code.** The layer decides the package, so there is one right answer to "where does this go".
+- **The compiler and `kakarot check` catch mistakes.** Types catch a wrong request or response; `check` catches a wrong import, a misspelled comment and stale generated code. Each message has `file:line` and the fix.
+- **A fast loop with no setup.** `go generate ./... && go test ./... && go tool kakarot check` needs no database and no network.
+- **Runnable examples** in the package documentation (`go doc`, `Example` tests), which cannot go out of date.
 
 ## HTTP
 
@@ -185,6 +269,11 @@ admin := auth.Require(func(u User) error {
     return nil
 })
 u, ok := auth.From[User](ctx) // typed, anywhere below transport
+
+// the same verifier on gRPC, for unary calls and streams
+unary, stream := grpcx.Bearer(verify)
+gs := grpc.NewServer(grpc.ChainUnaryInterceptor(unary), grpc.ChainStreamInterceptor(stream))
+ctx = grpcx.WithBearer(ctx, token) // client side
 ```
 
 ## Resilience
@@ -203,6 +292,15 @@ ep := kakarot.Decorate(op, eps.PlaceOrder, middleware.Idempotent[PlaceOrder, Ord
 ```
 
 `MemoryIdempotencyStore` is for one process. `data/idempotency.Store[Resp]{DB: db}` keeps responses in PostgreSQL through storm, so every instance replays them; add `&model.IdempotencyRecord{}` to your storm models and call `Purge` on a schedule.
+
+## Scheduled jobs
+
+```go
+expire := &kakarot.Job{Name: "expire-orders", Every: time.Minute, Run: expireOrders.Run}
+app := &kakarot.App{Servers: []kakarot.Server{httpServer, consumer, relay, expire}}
+```
+
+A `Job` starts and stops with the application. Runs never overlap, and a failed run is logged without stopping the job.
 
 ## Events: transactional outbox
 
@@ -236,6 +334,7 @@ Cursors are opaque, typed (`DecodeCursor[C]`), and a malformed cursor is a 400.
 var CodeQuotaExceeded = kakarot.NewCode("quota_exceeded")
 httpx.RegisterStatus(CodeQuotaExceeded, http.StatusTooManyRequests)
 return kakarot.E(CodeQuotaExceeded, "monthly quota used up", nil)
+kakarot.Is(err, CodeQuotaExceeded) // true; false for a nil error
 
 // 2. Your own body shape (e.g. RFC 9457 problem+json), app-wide; groups inherit it
 r.SetErrorEncoder(func(ctx context.Context, w http.ResponseWriter, err error) {
@@ -250,22 +349,31 @@ r.Handle("POST /pay", eps.Pay, httpx.Errors(payErrors))
 
 Internal errors are logged with their cause and shown to callers only as `internal error`.
 
+Custom codes also survive gRPC. The server sends the code name and the per-field problems as status details, and the client restores them:
+
+```go
+grpcx.RegisterCode(CodeQuotaExceeded, codes.ResourceExhausted) // the gRPC status to send
+_, err := client.Pay(ctx, req)
+kakarot.AsError(err).Code == CodeQuotaExceeded // true on the client
+```
+
 ## Security
 
 - **Go 1.27.4 or later is required.** 1.27.3 has a known `net/http` vulnerability (GO-2026-6859); every `go.mod` here and in scaffolded projects pins 1.27.4.
 - CI runs `govulncheck` on every module on each pull request and weekly.
 - Defaults: 4 MB request body and NDJSON line limit, unknown JSON fields rejected, header read timeout, same-origin WebSocket unless `OriginPatterns` is set, internal error causes never sent to callers.
-- Idempotency keys are scoped per operation and capped at 255 bytes; include the caller's identity in `IdempotencyKey()` when responses are private. `MemoryIdempotencyStore` is bounded by `MaxEntries`.
+- Idempotency keys are scoped per operation and capped at 255 bytes. When responses are private, use `middleware.IdempotentFor(store, caller)`: it also scopes each key to the caller, so one user can never replay another user's response. `MemoryIdempotencyStore` is bounded by `MaxEntries`.
 - Pagination cursors are encoded, not signed: use them as a position inside an already-authorized query, never as proof of access.
 - `RateLimit` is per operation, not per client; put per-client limits at your gateway or key your own limiter by principal.
 
-## Tests
+## Testing kakarot itself
 
 Each module is tested on its own:
 
 ```console
 $ for m in . transport/grpcx transport/wsx data otelx cmd/kakarot; do (cd $m && go test -race ./...); done
 $ cd examples/orders && KAKAROT_TEST_DSN=postgres://user:pass@localhost:5432/orders go test -race ./...   # live storm tests
+$ cd examples/wallet && KAKAROT_TEST_DSN=postgres://user:pass@localhost:5432/wallet go test -race ./...   # use a separate database
 $ go run golang.org/x/vuln/cmd/govulncheck@latest ./...   # in any module
 ```
 

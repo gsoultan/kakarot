@@ -7,6 +7,7 @@ import (
 	"io"
 	"iter"
 
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/encoding"
@@ -232,7 +233,22 @@ func FromStatus(err error) error {
 	if !ok {
 		return kakarot.E(kakarot.CodeUnavailable, "rpc failed", err)
 	}
-	return &kakarot.Error{Code: fromCode(st.Code()), Message: st.Message(), Cause: err}
+	out := &kakarot.Error{Code: fromCode(st.Code()), Message: st.Message(), Cause: err}
+	for _, d := range st.Details() {
+		info, ok := d.(*errdetails.ErrorInfo)
+		if !ok || info.GetDomain() != errorDomain {
+			continue
+		}
+		// The server named its exact code; an unknown name (a code this
+		// process never registered) keeps the code derived from the status.
+		if c, ok := kakarot.LookupCode(info.GetReason()); ok && c != kakarot.CodeInternal {
+			out.Code = c
+		}
+		if len(info.GetMetadata()) > 0 {
+			out.Fields = info.GetMetadata()
+		}
+	}
+	return out
 }
 
 func fromCode(c codes.Code) kakarot.Code {
