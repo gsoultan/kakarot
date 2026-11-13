@@ -33,6 +33,7 @@ The core has no dependencies outside the Go standard library. Anything that pull
 | `github.com/gsoultan/kakarot/otelx` | OpenTelemetry tracing and metrics | opentelemetry-go |
 | `github.com/gsoultan/kakarot/cmd/kakarot` | CLI: `new`, `gen` | x/tools |
 | `examples/orders` | a complete service on every layer | all of the above |
+| `examples/wallet` | a money-transfer service wired in plain Go: auth, idempotent transfers, ledger, outbox, gRPC | core, `data`, `grpcx` |
 
 ```text
 endpoint.go stream.go errors.go   core: Endpoint, streams, Middleware, Wrap, Decorate, Usecase, Error
@@ -185,6 +186,11 @@ admin := auth.Require(func(u User) error {
     return nil
 })
 u, ok := auth.From[User](ctx) // typed, anywhere below transport
+
+// the same verifier on gRPC, for unary calls and streams
+unary, stream := grpcx.Bearer(verify)
+gs := grpc.NewServer(grpc.ChainUnaryInterceptor(unary), grpc.ChainStreamInterceptor(stream))
+ctx = grpcx.WithBearer(ctx, token) // client side
 ```
 
 ## Resilience
@@ -250,12 +256,20 @@ r.Handle("POST /pay", eps.Pay, httpx.Errors(payErrors))
 
 Internal errors are logged with their cause and shown to callers only as `internal error`.
 
+Custom codes also survive gRPC. The server sends the code name and the per-field problems as status details, and the client restores them:
+
+```go
+grpcx.RegisterCode(CodeQuotaExceeded, codes.ResourceExhausted) // the gRPC status to send
+_, err := client.Pay(ctx, req)
+kakarot.AsError(err).Code == CodeQuotaExceeded // true on the client
+```
+
 ## Security
 
 - **Go 1.27.4 or later is required.** 1.27.3 has a known `net/http` vulnerability (GO-2026-6859); every `go.mod` here and in scaffolded projects pins 1.27.4.
 - CI runs `govulncheck` on every module on each pull request and weekly.
 - Defaults: 4 MB request body and NDJSON line limit, unknown JSON fields rejected, header read timeout, same-origin WebSocket unless `OriginPatterns` is set, internal error causes never sent to callers.
-- Idempotency keys are scoped per operation and capped at 255 bytes; include the caller's identity in `IdempotencyKey()` when responses are private. `MemoryIdempotencyStore` is bounded by `MaxEntries`.
+- Idempotency keys are scoped per operation and capped at 255 bytes. When responses are private, use `middleware.IdempotentFor(store, caller)`: it also scopes each key to the caller, so one user can never replay another user's response. `MemoryIdempotencyStore` is bounded by `MaxEntries`.
 - Pagination cursors are encoded, not signed: use them as a position inside an already-authorized query, never as proof of access.
 - `RateLimit` is per operation, not per client; put per-client limits at your gateway or key your own limiter by principal.
 
@@ -266,6 +280,7 @@ Each module is tested on its own:
 ```console
 $ for m in . transport/grpcx transport/wsx data otelx cmd/kakarot; do (cd $m && go test -race ./...); done
 $ cd examples/orders && KAKAROT_TEST_DSN=postgres://user:pass@localhost:5432/orders go test -race ./...   # live storm tests
+$ cd examples/wallet && KAKAROT_TEST_DSN=postgres://user:pass@localhost:5432/wallet go test -race ./...   # use a separate database
 $ go run golang.org/x/vuln/cmd/govulncheck@latest ./...   # in any module
 ```
 

@@ -2,6 +2,8 @@ package middleware
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"sync"
 	"time"
 
@@ -32,10 +34,24 @@ const MaxIdempotencyKeyLen = 255
 //
 // Keys are scoped to the operation, so one key never replays another
 // operation's response. They are not scoped to the caller: when responses
-// are private, make IdempotencyKey include the caller's identity (for
-// example tenant + "/" + header key), so one caller cannot replay another's
+// are private, use IdempotentFor so one caller cannot replay another's
 // response by guessing a key.
 func Idempotent[Req Keyed, Resp any](store IdempotencyStore[Resp]) kakarot.TypedMiddleware[Req, Resp] {
+	return IdempotentFor[Req](store, nil)
+}
+
+// IdempotentFor is Idempotent with keys also scoped to the caller. caller
+// returns the identity the request runs as, usually from the authenticated
+// principal:
+//
+//	middleware.IdempotentFor[domain.Transfer](store, func(ctx context.Context) string {
+//	    u, _ := auth.From[domain.User](ctx)
+//	    return u.ID
+//	})
+//
+// A key then replays only for the caller that first used it. Put it inside
+// the middleware that authenticates, so the principal is already in ctx.
+func IdempotentFor[Req Keyed, Resp any](store IdempotencyStore[Resp], caller func(ctx context.Context) string) kakarot.TypedMiddleware[Req, Resp] {
 	return func(op kakarot.Op, next kakarot.Endpoint[Req, Resp]) kakarot.Endpoint[Req, Resp] {
 		scope := op.Service + "." + op.Method + "/"
 		return func(ctx context.Context, req Req) (Resp, error) {
@@ -48,6 +64,12 @@ func Idempotent[Req Keyed, Resp any](store IdempotencyStore[Resp]) kakarot.Typed
 				return zero, kakarot.Invalid("idempotency key must be at most 255 printable ASCII characters", nil)
 			}
 			key = scope + key
+			if caller != nil {
+				// The identity is hashed: it may hold any characters and
+				// must not be able to imitate another scope.
+				sum := sha256.Sum256([]byte(caller(ctx)))
+				key = scope + hex.EncodeToString(sum[:16]) + "/" + req.IdempotencyKey()
+			}
 			prev, done, err := store.Begin(ctx, key)
 			if err != nil || done {
 				return prev, err

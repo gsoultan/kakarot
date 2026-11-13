@@ -28,7 +28,9 @@ import (
 	"io"
 	"iter"
 	"net"
+	"sync"
 
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -171,6 +173,10 @@ func recvAll[P, M any](recv func() (*P, error), in func(*P) (M, error)) iter.Seq
 
 // Status converts an error to a gRPC status error, mapping kakarot codes.
 // Internal errors keep their cause out of the message.
+//
+// The status also carries the kakarot code name and the per-field problems
+// as a google.rpc.ErrorInfo detail, so FromStatus on the client restores
+// the exact error, including application codes made with kakarot.NewCode.
 func Status(err error) error {
 	if err == nil {
 		return nil
@@ -181,11 +187,40 @@ func Status(err error) error {
 		}
 	}
 	e := kakarot.AsError(err)
-	return status.Error(CodeOf(e.Code), e.Message)
+	st := status.New(CodeOf(e.Code), e.Message)
+	if e.Code != kakarot.CodeInternal {
+		if detailed, derr := st.WithDetails(&errdetails.ErrorInfo{
+			Reason: e.Code.String(), Domain: errorDomain, Metadata: e.Fields,
+		}); derr == nil {
+			st = detailed
+		}
+	}
+	return st.Err()
+}
+
+const errorDomain = "kakarot"
+
+var (
+	codeMu      sync.RWMutex
+	customCodes = map[kakarot.Code]codes.Code{}
+)
+
+// RegisterCode sets the gRPC status code for a kakarot code, typically one
+// made with kakarot.NewCode. Call it during startup.
+func RegisterCode(c kakarot.Code, grpcCode codes.Code) {
+	codeMu.Lock()
+	defer codeMu.Unlock()
+	customCodes[c] = grpcCode
 }
 
 // CodeOf maps a kakarot code to a gRPC code.
 func CodeOf(c kakarot.Code) codes.Code {
+	codeMu.RLock()
+	gc, ok := customCodes[c]
+	codeMu.RUnlock()
+	if ok {
+		return gc
+	}
 	switch c {
 	case kakarot.CodeInvalid:
 		return codes.InvalidArgument
