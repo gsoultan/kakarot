@@ -126,3 +126,19 @@ func TestLookupCode(t *testing.T) {
 		t.Fatal("unknown name found")
 	}
 }
+
+func TestIsAndCodeOfAcceptNil(t *testing.T) {
+	if kakarot.Is(nil, kakarot.CodeInternal) {
+		t.Fatal("nil is not an internal error")
+	}
+	if kakarot.CodeOf(nil) != kakarot.CodeInternal { // must not panic
+		t.Fatal("CodeOf(nil)")
+	}
+	wrapped := fmt.Errorf("lookup: %w", kakarot.NotFound("order", "1"))
+	if !kakarot.Is(wrapped, kakarot.CodeNotFound) || kakarot.Is(wrapped, kakarot.CodeConflict) {
+		t.Fatal("Is does not see the wrapped code")
+	}
+	if !kakarot.Is(errors.New("boom"), kakarot.CodeInternal) {
+		t.Fatal("a plain error is internal")
+	}
+}
