@@ -2,12 +2,10 @@ package orders_test
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +16,7 @@ import (
 	"github.com/gsoultan/kakarot/examples/orders/service"
 	"github.com/gsoultan/kakarot/examples/orders/transport"
 	"github.com/gsoultan/kakarot/examples/orders/usecase"
+	"github.com/gsoultan/kakarot/kakarottest"
 	"github.com/gsoultan/kakarot/middleware"
 	"github.com/gsoultan/kakarot/queue"
 	"github.com/gsoultan/kakarot/transport/grpcx"
@@ -63,13 +62,6 @@ func (e *memEvents) OrderPlaced(_ context.Context, o domain.Order) error {
 	return nil
 }
 
-type noTx struct{ calls int }
-
-func (t *noTx) Within(ctx context.Context, fn func(context.Context) error) error {
-	t.calls++
-	return fn(ctx)
-}
-
 type memNotifier struct{ orders []string }
 
 func (n *memNotifier) OrderPlaced(_ context.Context, o domain.Order) error {
@@ -79,9 +71,9 @@ func (n *memNotifier) OrderPlaced(_ context.Context, o domain.Order) error {
 
 var quiet = slog.New(slog.NewTextHandler(io.Discard, nil))
 
-func newEndpoints() (endpoint.OrderEndpoints, *noTx, *memNotifier) {
+func newEndpoints() (endpoint.OrderEndpoints, *kakarottest.Tx, *memNotifier) {
 	repo := &memRepo{orders: map[string]domain.Order{}}
-	tx := &noTx{}
+	tx := &kakarottest.Tx{}
 	notifier := &memNotifier{}
 	svc := service.New(service.Usecases{
 		Place:  &usecase.PlaceOrder{Orders: repo, Events: &memEvents{}, Tx: tx},
@@ -93,7 +85,7 @@ func newEndpoints() (endpoint.OrderEndpoints, *noTx, *memNotifier) {
 	return endpoint.MakeOrderEndpoints(svc), tx, notifier
 }
 
-func newServer(t *testing.T) (http.Handler, *noTx) {
+func newServer(t *testing.T) (http.Handler, *kakarottest.Tx) {
 	t.Helper()
 	eps, tx, _ := newEndpoints()
 	r := httpx.NewRouter()
@@ -109,8 +101,7 @@ func TestGRPCRoundTrip(t *testing.T) {
 	transport.RegisterOrderGRPC(gs, eps, middleware.Default(quiet, time.Second))
 	lis := bufconn.Listen(1 << 20)
 	srv := &grpcx.Server{GRPC: gs, Listener: lis}
-	go srv.Serve(t.Context())
-	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
+	kakarottest.Serve(t, srv)
 	conn, err := grpc.NewClient("passthrough:///buf",
 		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) }),
 		grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -128,13 +119,10 @@ func TestGRPCRoundTrip(t *testing.T) {
 	if err != nil || got.CustomerID != "c-9" || len(got.Items) != 1 {
 		t.Fatalf("get: %+v %v", got, err)
 	}
-	if _, err := client.GetOrder(t.Context(), domain.GetOrder{ID: "nope"}); kakarot.CodeOf(err) != kakarot.CodeNotFound {
-		t.Fatalf("missing: %v", err)
-	}
+	_, err = client.GetOrder(t.Context(), domain.GetOrder{ID: "nope"})
+	kakarottest.WantCode(t, err, kakarot.CodeNotFound)
 	_, err = client.PlaceOrder(t.Context(), domain.PlaceOrder{})
-	if e := kakarot.AsError(err); e.Code != kakarot.CodeInvalid {
-		t.Fatalf("validation must run for gRPC too: %v", err)
-	}
+	kakarottest.WantCode(t, err, kakarot.CodeInvalid) // validation runs for gRPC too
 	page, err := client.ListOrders(t.Context(), domain.ListOrders{CustomerID: "c-9"})
 	if err != nil || len(page.Items) != 1 {
 		t.Fatalf("list: %+v %v", page, err)
@@ -152,96 +140,72 @@ func TestQueueConsumer(t *testing.T) {
 	broker := &queue.Memory{}
 	c := &queue.Consumer{Service: "order", Source: broker, Logger: quiet}
 	transport.RegisterOrderQueue(c, eps, middleware.Default(quiet, time.Second))
-	done := make(chan error, 1)
-	go func() { done <- c.Serve(context.Background()) }()
-	for broker.Subscribers("order.placed") == 0 {
-		time.Sleep(time.Millisecond)
-	}
-	m, err := transport.NotifyOrderPlacedTopic.Encode("o-7", domain.Order{ID: "o-7", CustomerID: "c-1"})
+	kakarottest.Serve(t, c)
+
+	err := kakarottest.Publish(t, broker, transport.NotifyOrderPlacedTopic, "o-7", domain.Order{ID: "o-7", CustomerID: "c-1"})
 	if err != nil {
-		t.Fatal(err)
-	}
-	if err := broker.Publish(t.Context(), m); err != nil {
 		t.Fatal(err)
 	}
 	if len(notifier.orders) != 1 || notifier.orders[0] != "o-7" {
 		t.Fatalf("notified = %v", notifier.orders)
 	}
-	if err := c.Shutdown(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
 }
+
+const pens = `{"customer_id":"c-9","items":[{"sku":"pen","quantity":2}]}`
 
 func TestPlaceAndGetOrder(t *testing.T) {
 	h, tx := newServer(t)
 
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest("POST", "/orders",
-		strings.NewReader(`{"customer_id":"c-9","items":[{"sku":"pen","quantity":2}]}`)))
-	if w.Code != http.StatusCreated {
-		t.Fatalf("place: %d %s", w.Code, w.Body)
+	placed := kakarottest.Do[domain.Order](t, h, "POST", "/orders", pens)
+	if placed.Status != http.StatusCreated {
+		t.Fatalf("place: %d %s", placed.Status, placed.Raw)
 	}
-	if tx.calls != 1 {
-		t.Fatalf("tx calls = %d", tx.calls)
+	if tx.Commits() != 1 {
+		t.Fatalf("commits = %d", tx.Commits())
 	}
 
-	w = httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest("GET", "/orders/o-1", nil))
-	if w.Code != http.StatusOK {
-		t.Fatalf("get: %d %s", w.Code, w.Body)
+	got := kakarottest.Do[domain.Order](t, h, "GET", "/orders/o-1", nil)
+	if got.Status != http.StatusOK {
+		t.Fatalf("get: %d %s", got.Status, got.Raw)
 	}
-	var got domain.Order
-	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
-		t.Fatal(err)
-	}
-	if got.CustomerID != "c-9" || got.Status != domain.StatusPlaced || len(got.Items) != 1 {
-		t.Fatalf("got %+v", got)
+	if o := got.Body; o.CustomerID != "c-9" || o.Status != domain.StatusPlaced || len(o.Items) != 1 {
+		t.Fatalf("got %+v", o)
 	}
 }
 
 func TestPlaceOrderValidation(t *testing.T) {
 	h, tx := newServer(t)
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest("POST", "/orders", strings.NewReader(`{"items":[]}`)))
-	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "customer_id") {
-		t.Fatalf("%d %s", w.Code, w.Body)
+	res := kakarottest.Do[domain.Order](t, h, "POST", "/orders", `{"items":[]}`)
+	if res.Status != http.StatusBadRequest || res.Error.Fields["customer_id"] == "" {
+		t.Fatalf("%d %s", res.Status, res.Raw)
 	}
-	if tx.calls != 0 {
+	if tx.Commits()+tx.Rollbacks() != 0 {
 		t.Fatal("usecase ran despite invalid input")
 	}
 }
 
 func TestGetMissingOrder(t *testing.T) {
 	h, _ := newServer(t)
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest("GET", "/orders/nope", nil))
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("%d %s", w.Code, w.Body)
+	res := kakarottest.Do[domain.Order](t, h, "GET", "/orders/nope", nil)
+	if res.Status != http.StatusNotFound || res.Error.Code != "not_found" {
+		t.Fatalf("%d %s", res.Status, res.Raw)
 	}
 }
 
 func TestListAndExport(t *testing.T) {
 	h, _ := newServer(t)
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest("POST", "/orders",
-		strings.NewReader(`{"customer_id":"c-9","items":[{"sku":"pen","quantity":2}]}`)))
+	kakarottest.Do[domain.Order](t, h, "POST", "/orders", pens)
 
-	w = httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest("GET", "/orders", nil))
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("list without customer: %d", w.Code)
+	if res := kakarottest.Do[kakarottest.None](t, h, "GET", "/orders", nil); res.Status != http.StatusBadRequest {
+		t.Fatalf("list without customer: %d", res.Status)
 	}
-	w = httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest("GET", "/orders?customer_id=c-9&limit=10", nil))
-	if w.Code != 200 || !strings.Contains(w.Body.String(), `"items":[{"id":"o-1"`) {
-		t.Fatalf("%d %s", w.Code, w.Body)
+	page := kakarottest.Do[kakarot.Page[domain.Order]](t, h, "GET", "/orders?customer_id=c-9&limit=10", nil)
+	if page.Status != http.StatusOK || len(page.Body.Items) != 1 || page.Body.Items[0].ID != "o-1" {
+		t.Fatalf("%d %s", page.Status, page.Raw)
 	}
-	w = httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest("GET", "/orders/export?customer_id=c-9", nil))
-	if w.Code != 200 || strings.Count(w.Body.String(), "\n") != 1 {
-		t.Fatalf("%d %q", w.Code, w.Body)
+	// The export is a stream: one JSON object per line.
+	export := kakarottest.Do[kakarottest.None](t, h, "GET", "/orders/export?customer_id=c-9", nil)
+	if export.Status != http.StatusOK || strings.Count(string(export.Raw), "\n") != 1 {
+		t.Fatalf("%d %q", export.Status, export.Raw)
 	}
 }
