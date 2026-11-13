@@ -9,10 +9,13 @@ import (
 	"testing"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
 	"github.com/gsoultan/kakarot"
+	"github.com/gsoultan/kakarot/auth"
 	"github.com/gsoultan/kakarot/transport/grpcx"
 )
 
@@ -182,5 +185,94 @@ func TestJSONMalformedRequest(t *testing.T) {
 	_, err := grpcx.Invoke[string, order](conn, svcName, "GetOrder")(t.Context(), "not an object")
 	if kakarot.CodeOf(err) != kakarot.CodeInvalid {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+type user struct{ Name string }
+
+func TestBearerAuthenticatesUnaryAndStreams(t *testing.T) {
+	verify := func(_ context.Context, token string) (user, error) {
+		if token != "good" {
+			return user{}, errors.New("signature mismatch")
+		}
+		return user{Name: "ada"}, nil
+	}
+	unary, stream := grpcx.Bearer(verify)
+	svc := grpcx.NewService("who.Who", auth.Require[user](nil))
+	grpcx.AddUnary(svc, "Me", func(ctx context.Context, _ struct{}) (string, error) {
+		u, _ := auth.From[user](ctx)
+		return u.Name, nil
+	})
+	grpcx.AddServerStream(svc, "Names", func(ctx context.Context, _ struct{}) iter.Seq2[string, error] {
+		u, _ := auth.From[user](ctx)
+		return kakarot.SliceStream([]string{u.Name})
+	})
+	s := grpc.NewServer(grpc.ChainUnaryInterceptor(unary), grpc.ChainStreamInterceptor(stream))
+	svc.Register(s)
+	lis := bufconn.Listen(1 << 20)
+	srv := &grpcx.Server{GRPC: s, Listener: lis}
+	go srv.Serve(t.Context())
+	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
+	conn, err := grpc.NewClient("passthrough:///buf",
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) }),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	me := grpcx.Invoke[struct{}, string](conn, "who.Who", "Me")
+	names := grpcx.Receive[struct{}, string](conn, "who.Who", "Names")
+
+	if name, err := me(grpcx.WithBearer(t.Context(), "good"), struct{}{}); err != nil || name != "ada" {
+		t.Fatalf("name=%q err=%v", name, err)
+	}
+	if got, err := kakarot.Collect(names(grpcx.WithBearer(t.Context(), "good"), struct{}{})); err != nil || len(got) != 1 || got[0] != "ada" {
+		t.Fatalf("stream: %v %v", got, err)
+	}
+	if _, err := me(t.Context(), struct{}{}); kakarot.CodeOf(err) != kakarot.CodeUnauthorized {
+		t.Fatalf("no token: %v", err)
+	}
+	_, err = me(grpcx.WithBearer(t.Context(), "bad"), struct{}{})
+	if kakarot.CodeOf(err) != kakarot.CodeUnauthorized || strings.Contains(err.Error(), "signature") {
+		t.Fatalf("bad token: %v", err)
+	}
+	if _, err := kakarot.Collect(names(grpcx.WithBearer(t.Context(), "bad"), struct{}{})); kakarot.CodeOf(err) != kakarot.CodeUnauthorized {
+		t.Fatalf("bad token on stream: %v", err)
+	}
+}
+
+var codeQuota = kakarot.NewCode("grpc_quota_exceeded")
+
+func TestErrorsKeepCodeAndFieldsOverTheWire(t *testing.T) {
+	grpcx.RegisterCode(codeQuota, codes.ResourceExhausted)
+	svc := grpcx.NewService("errs.Errs")
+	grpcx.AddUnary(svc, "Do", func(_ context.Context, kind string) (string, error) {
+		if kind == "quota" {
+			return "", kakarot.E(codeQuota, "monthly quota used up", nil)
+		}
+		return "", kakarot.Invalid("invalid order", map[string]string{"amount": "must be positive"})
+	})
+	s := grpc.NewServer()
+	svc.Register(s)
+	lis := bufconn.Listen(1 << 20)
+	srv := &grpcx.Server{GRPC: s, Listener: lis}
+	go srv.Serve(t.Context())
+	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
+	conn, err := grpc.NewClient("passthrough:///buf",
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) }),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	do := grpcx.Invoke[string, string](conn, "errs.Errs", "Do")
+
+	_, err = do(t.Context(), "quota")
+	if e := kakarot.AsError(err); e.Code != codeQuota || e.Message != "monthly quota used up" || status.Code(e.Cause) != codes.ResourceExhausted {
+		t.Fatalf("application code lost: %v", err)
+	}
+	_, err = do(t.Context(), "fields")
+	if e := kakarot.AsError(err); e.Code != kakarot.CodeInvalid || e.Fields["amount"] != "must be positive" {
+		t.Fatalf("fields lost: %+v", e)
 	}
 }

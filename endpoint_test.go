@@ -113,3 +113,16 @@ func TestAsError(t *testing.T) {
 		t.Fatal("AsError(nil) != nil")
 	}
 }
+
+func TestLookupCode(t *testing.T) {
+	custom := kakarot.NewCode("lookup_test_code")
+	if c, ok := kakarot.LookupCode("lookup_test_code"); !ok || c != custom {
+		t.Fatal(c, ok)
+	}
+	if c, ok := kakarot.LookupCode("not_found"); !ok || c != kakarot.CodeNotFound {
+		t.Fatal(c, ok)
+	}
+	if _, ok := kakarot.LookupCode("nope"); ok {
+		t.Fatal("unknown name found")
+	}
+}

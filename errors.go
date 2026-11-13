@@ -49,6 +49,19 @@ func NewCode(name string) Code {
 
 var codeMu sync.Mutex
 
+// LookupCode finds a code by its name, built in or registered with NewCode.
+// Transports use it to restore a code that crossed the wire as text.
+func LookupCode(name string) (Code, bool) {
+	codeMu.Lock()
+	defer codeMu.Unlock()
+	for i, n := range codeNames {
+		if n == name {
+			return Code(i), true
+		}
+	}
+	return CodeInternal, false
+}
+
 func (c Code) String() string {
 	codeMu.Lock()
 	defer codeMu.Unlock()
