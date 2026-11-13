@@ -68,15 +68,12 @@ func TestGenerateCompiles(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	gomod, err := os.ReadFile(filepath.Join(root, "go.mod"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Reuse kakarot's requirements so the build needs no network.
-	reqs := gomod[strings.Index(string(gomod), "require"):]
-	write("go.mod", "module example.com/demo\n\ngo 1.27.3\n\nrequire github.com/gsoultan/kakarot v0.0.0\n\n"+string(reqs)+
-		"\nreplace github.com/gsoultan/kakarot => "+root+"\n")
-	sum, _ := os.ReadFile(filepath.Join(root, "go.sum"))
+	// Reuse the wsx module's sums so the build needs no network.
+	write("go.mod", "module example.com/demo\n\ngo 1.27.4\n\n"+
+		"require (\n\tgithub.com/gsoultan/kakarot v0.0.0\n\tgithub.com/gsoultan/kakarot/transport/wsx v0.0.0\n\tgithub.com/coder/websocket v1.8.15\n)\n\n"+
+		"replace github.com/gsoultan/kakarot => "+root+"\n"+
+		"replace github.com/gsoultan/kakarot/transport/wsx => "+filepath.Join(root, "transport", "wsx")+"\n")
+	sum, _ := os.ReadFile(filepath.Join(root, "transport", "wsx", "go.sum"))
 	write("go.sum", string(sum))
 	write("domain/domain.go", domainSrc)
 	write("service/service.go", svcSrc)
@@ -124,7 +121,7 @@ func TestGenerateRejectsBadShape(t *testing.T) {
 	_, self, _, _ := runtime.Caller(0)
 	root := filepath.Join(filepath.Dir(self), "..", "..")
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/bad\n\ngo 1.27.3\n\nrequire github.com/gsoultan/kakarot v0.0.0\n\nreplace github.com/gsoultan/kakarot => "+root+"\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/bad\n\ngo 1.27.4\n\nrequire github.com/gsoultan/kakarot v0.0.0\n\nreplace github.com/gsoultan/kakarot => "+root+"\n"), 0o644)
 	os.MkdirAll(filepath.Join(dir, "service"), 0o755)
 	os.WriteFile(filepath.Join(dir, "service", "s.go"), []byte(`package service
 

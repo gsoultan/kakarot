@@ -3,6 +3,7 @@ package middleware_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -113,7 +114,31 @@ func TestIdempotent(t *testing.T) {
 		return "", errors.New("card declined")
 	}, middleware.Idempotent[payReq](store))
 	_, _ = failing(t.Context(), payReq{Key: "k2"})
-	if _, done, _ := store.Begin(t.Context(), "k2"); done {
+	if _, done, _ := store.Begin(t.Context(), ".\x00k2"); done {
 		t.Fatal("failed call was stored")
+	}
+}
+
+func TestIdempotentScopeAndLimits(t *testing.T) {
+	store := &middleware.MemoryIdempotencyStore[string]{MaxEntries: 2}
+	mk := func(method string) kakarot.Endpoint[payReq, string] {
+		return kakarot.Decorate(kakarot.Op{Service: "pay", Method: method},
+			func(_ context.Context, r payReq) (string, error) { return method + "-" + r.Key, nil },
+			middleware.Idempotent[payReq](store))
+	}
+	charge, refund := mk("Charge"), mk("Refund")
+	a, _ := charge(t.Context(), payReq{Key: "k"})
+	b, _ := refund(t.Context(), payReq{Key: "k"})
+	if a != "Charge-k" || b != "Refund-k" {
+		t.Fatalf("same key crossed operations: %q %q", a, b)
+	}
+	if _, err := charge(t.Context(), payReq{Key: strings.Repeat("x", 300)}); kakarot.CodeOf(err) != kakarot.CodeInvalid {
+		t.Fatalf("long key: %v", err)
+	}
+	if _, err := charge(t.Context(), payReq{Key: "third"}); kakarot.CodeOf(err) != kakarot.CodeUnavailable {
+		t.Fatalf("full store: %v", err)
+	}
+	if again, err := charge(t.Context(), payReq{Key: "k"}); err != nil || again != a {
+		t.Fatalf("stored key must still replay when full: %q %v", again, err)
 	}
 }

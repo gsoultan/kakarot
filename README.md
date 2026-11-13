@@ -6,7 +6,7 @@ A layered Go framework: **transport → middleware → endpoint → service → 
 - **One service, many transports.** The same endpoint serves HTTP, gRPC and WebSocket. Errors are domain codes that each transport maps once.
 - **Domain types are the DTOs**; **storm models are the database types** and never leave the repository. Repositories use [storm](https://github.com/gsoultan/storm).
 - **Generated glue, hand-written logic.** `kakarot gen` writes the endpoint and transport layers from an annotated service interface.
-- **Go 1.27.3**: generic methods (`Router.Handle[Req, Resp]`), iterators for streams, `errors.AsType`, `log/slog`, `http.ServeMux` patterns.
+- **Go 1.27.4**: generic methods (`Router.Handle[Req, Resp]`), iterators for streams, `errors.AsType`, `log/slog`, `http.ServeMux` patterns.
 
 ## Quick start
 
@@ -20,21 +20,26 @@ $ STORM_DSN=postgres://localhost/notes AUTO_MIGRATE=1 go run ./cmd/server
 $ curl -XPOST localhost:8080/notes -d '{"title":"hi"}'
 ```
 
-## Layout
+## Modules
+
+The core has no dependencies outside the Go standard library. Anything that pulls in a third-party library is its own module, so you only download what you use.
+
+| Module | Contents | Depends on |
+|---|---|---|
+| `github.com/gsoultan/kakarot` | core, `middleware`, `auth`, `transport/httpx` | standard library only |
+| `github.com/gsoultan/kakarot/transport/grpcx` | gRPC adapters | grpc-go |
+| `github.com/gsoultan/kakarot/transport/wsx` | WebSocket streams | coder/websocket |
+| `github.com/gsoultan/kakarot/data` | storm `TxManager`, error mapping, `outbox` | storm |
+| `github.com/gsoultan/kakarot/cmd/kakarot` | CLI: `new`, `gen` | x/tools |
+| `examples/orders` | a complete service on every layer | all of the above |
 
 ```text
 endpoint.go stream.go errors.go   core: Endpoint, streams, Middleware, Wrap, Decorate, Usecase, Error
 app.go page.go                    App (graceful run of many servers), keyset Page / cursors
 transport/httpx/                  HTTP: Router, Handle, Stream (SSE/NDJSON), Upload, OpenAPI 3.1
-transport/grpcx/                  gRPC: Unary, ServerStream, ClientStream, Bidi, status mapping
-transport/wsx/                    WebSocket bidirectional streams
 middleware/                       Recover, Logging, Timeout, Validated, Retry, CircuitBreaker,
                                   RateLimit, Idempotent
 auth/                             typed principal in context, Bearer, Require
-data/                             storm TxManager, Executor, error mapping
-data/outbox/                      transactional outbox with a typed Topic[T] and a relay
-cmd/kakarot/                      CLI: new, gen
-examples/orders/                  a complete service on every layer (its own module)
 ```
 
 ## The layers
@@ -192,11 +197,23 @@ r.Handle("POST /pay", eps.Pay, httpx.Errors(payErrors))
 
 Internal errors are logged with their cause and shown to callers only as `internal error`.
 
+## Security
+
+- **Go 1.27.4 or later is required.** 1.27.3 has a known `net/http` vulnerability (GO-2026-6859); every `go.mod` here and in scaffolded projects pins 1.27.4.
+- CI runs `govulncheck` on every module on each pull request and weekly.
+- Defaults: 4 MB request body and NDJSON line limit, unknown JSON fields rejected, header read timeout, same-origin WebSocket unless `OriginPatterns` is set, internal error causes never sent to callers.
+- Idempotency keys are scoped per operation and capped at 255 bytes; include the caller's identity in `IdempotencyKey()` when responses are private. `MemoryIdempotencyStore` is bounded by `MaxEntries`.
+- Pagination cursors are encoded, not signed: use them as a position inside an already-authorized query, never as proof of access.
+- `RateLimit` is per operation, not per client; put per-client limits at your gateway or key your own limiter by principal.
+
 ## Tests
 
+Each module is tested on its own:
+
 ```console
-$ go test -race ./...
+$ for m in . transport/grpcx transport/wsx data cmd/kakarot; do (cd $m && go test -race ./...); done
 $ cd examples/orders && KAKAROT_TEST_DSN=postgres://user:pass@localhost:5432/orders go test -race ./...   # live storm tests
+$ go run golang.org/x/vuln/cmd/govulncheck@latest ./...   # in any module
 ```
 
 ## Not built yet

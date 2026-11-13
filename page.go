@@ -35,7 +35,10 @@ func (p PageRequest) Size(def, max int) int {
 }
 
 // EncodeCursor turns a typed position (usually the last row's sort key) into
-// an opaque cursor string.
+// an opaque cursor string. Cursors are encoded, not signed or encrypted: a
+// client can read and forge one. Use a cursor only as a position inside a
+// query that is already filtered to what the caller may see, never as proof
+// of access.
 func EncodeCursor[C any](c C) (string, error) {
 	b, err := json.Marshal(c)
 	if err != nil {

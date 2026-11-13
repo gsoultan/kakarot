@@ -24,15 +24,30 @@ type IdempotencyStore[Resp any] interface {
 	Finish(ctx context.Context, key string, resp Resp, err error) error
 }
 
+// MaxIdempotencyKeyLen bounds client-supplied keys.
+const MaxIdempotencyKeyLen = 255
+
 // Idempotent replays the stored response for a repeated key instead of
 // running the operation again. Requests with an empty key run normally.
+//
+// Keys are scoped to the operation, so one key never replays another
+// operation's response. They are not scoped to the caller: when responses
+// are private, make IdempotencyKey include the caller's identity (for
+// example tenant + "/" + header key), so one caller cannot replay another's
+// response by guessing a key.
 func Idempotent[Req Keyed, Resp any](store IdempotencyStore[Resp]) kakarot.TypedMiddleware[Req, Resp] {
-	return func(_ kakarot.Op, next kakarot.Endpoint[Req, Resp]) kakarot.Endpoint[Req, Resp] {
+	return func(op kakarot.Op, next kakarot.Endpoint[Req, Resp]) kakarot.Endpoint[Req, Resp] {
+		scope := op.Service + "." + op.Method + "\x00"
 		return func(ctx context.Context, req Req) (Resp, error) {
 			key := req.IdempotencyKey()
 			if key == "" {
 				return next(ctx, req)
 			}
+			if len(key) > MaxIdempotencyKeyLen {
+				var zero Resp
+				return zero, kakarot.Invalid("idempotency key too long", nil)
+			}
+			key = scope + key
 			prev, done, err := store.Begin(ctx, key)
 			if err != nil || done {
 				return prev, err
@@ -50,9 +65,13 @@ func Idempotent[Req Keyed, Resp any](store IdempotencyStore[Resp]) kakarot.Typed
 // shared store (database, Redis) when running more than one instance.
 type MemoryIdempotencyStore[Resp any] struct {
 	TTL time.Duration // default 24h
+	// MaxEntries bounds memory, since keys come from clients; default
+	// 100000. When full, new keys are refused with CodeUnavailable.
+	MaxEntries int
 
-	mu      sync.Mutex
-	entries map[string]idemEntry[Resp]
+	mu        sync.Mutex
+	entries   map[string]idemEntry[Resp]
+	nextSweep time.Time
 }
 
 type idemEntry[Resp any] struct {
@@ -68,11 +87,28 @@ func (s *MemoryIdempotencyStore[Resp]) Begin(_ context.Context, key string) (Res
 		s.entries = map[string]idemEntry[Resp]{}
 	}
 	var zero Resp
-	if e, ok := s.entries[key]; ok && time.Now().Before(e.expires) {
+	now := time.Now()
+	if e, ok := s.entries[key]; ok && now.Before(e.expires) {
 		if !e.done {
 			return zero, false, kakarot.Conflict("request with this idempotency key is in progress", nil)
 		}
 		return e.resp, true, nil
+	}
+	limit := s.MaxEntries
+	if limit <= 0 {
+		limit = 100000
+	}
+	// Drop expired entries once a minute, or at once when full.
+	if now.After(s.nextSweep) || len(s.entries) >= limit {
+		for k, e := range s.entries {
+			if !now.Before(e.expires) {
+				delete(s.entries, k)
+			}
+		}
+		s.nextSweep = now.Add(time.Minute)
+	}
+	if _, ok := s.entries[key]; !ok && len(s.entries) >= limit {
+		return zero, false, kakarot.E(kakarot.CodeUnavailable, "idempotency store is full", nil)
 	}
 	s.entries[key] = idemEntry[Resp]{expires: time.Now().Add(time.Minute)}
 	return zero, false, nil

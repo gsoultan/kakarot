@@ -95,16 +95,16 @@ import (
 // Register{{$s.Short}}HTTP mounts every //kakarot:http method of {{$s.Name}}.
 // mws are shared endpoint middleware for the whole group.
 func Register{{$s.Short}}HTTP(r *httpx.Router, eps endpoint.{{$s.Short}}Endpoints, mws ...kakarot.Middleware) {
-	g := r.Group("{{$s.Group}}", mws...)
+	g := r.Group({{printf "%q" $s.Group}}, mws...)
 {{- range $s.Methods}}{{if .HTTP}}
 {{- if eq .Kind "Endpoint"}}
-	g.Handle("{{.HTTP}}", eps.{{.Name}}, httpx.Name("{{.Name}}"))
+	g.Handle({{printf "%q" .HTTP}}, eps.{{.Name}}, httpx.Name("{{.Name}}"))
 {{- else if eq .Kind "ServerStream"}}
-	g.Stream("{{.HTTP}}", eps.{{.Name}}, httpx.Name("{{.Name}}"))
+	g.Stream({{printf "%q" .HTTP}}, eps.{{.Name}}, httpx.Name("{{.Name}}"))
 {{- else if eq .Kind "ClientStream"}}
-	g.Upload("{{.HTTP}}", eps.{{.Name}}, httpx.Name("{{.Name}}"))
+	g.Upload({{printf "%q" .HTTP}}, eps.{{.Name}}, httpx.Name("{{.Name}}"))
 {{- else}}
-	wsx.Handle(g, "{{.HTTP}}", eps.{{.Name}}, wsx.Options{Name: "{{.Name}}"})
+	wsx.Handle(g, {{printf "%q" .HTTP}}, eps.{{.Name}}, wsx.Options{Name: "{{.Name}}"})
 {{- end}}{{end}}{{end}}
 }
 {{end}}`))

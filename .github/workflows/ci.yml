@@ -3,10 +3,22 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: "0 3 * * 1" # weekly, so new advisories surface without a push
+
+permissions:
+  contents: read
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [".", transport/grpcx, transport/wsx, data, cmd/kakarot, examples/orders]
+    defaults:
+      run:
+        working-directory: ${{ matrix.module }}
     services:
       postgres:
         image: postgres:16
@@ -19,14 +31,16 @@ jobs:
           --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version-file: ${{ matrix.module }}/go.mod
+          cache-dependency-path: ${{ matrix.module }}/go.sum
       - run: test -z "$(gofmt -l .)"
       - run: go vet ./...
-      - run: go test -race ./...
-      - name: example (live PostgreSQL)
-        working-directory: examples/orders
-        run: go vet ./... && go test -race -p 1 ./...
+      - run: go test -race -p 1 ./...
         env:
           KAKAROT_TEST_DSN: postgres://kk:kk@localhost:5432/orders
+      - name: vulnerability scan
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
