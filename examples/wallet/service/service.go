@@ -1,6 +1,8 @@
-// Package service is the wallet's API: what it can do, with no knowledge of
-// HTTP, gRPC, queues or SQL.
+// Package service is the wallet's API. kakarot gen reads this interface and
+// writes the endpoint layer and the HTTP, gRPC and queue bindings.
 package service
+
+//go:generate go tool kakarot gen
 
 import (
 	"context"
@@ -10,17 +12,33 @@ import (
 	"github.com/gsoultan/kakarot/examples/wallet/domain"
 )
 
-// WalletService is the wallet's contract. Each method has the endpoint
-// shape, so the endpoint and transport layers bind it directly.
+// WalletService is the contract every transport is generated from.
+//
+//kakarot:service wallet
 type WalletService interface {
+	//kakarot:http POST /accounts
+	//kakarot:grpc
 	OpenAccount(ctx context.Context, in domain.OpenAccount) (domain.Account, error)
+	//kakarot:http GET /accounts/{id}
+	//kakarot:grpc
 	GetAccount(ctx context.Context, in domain.GetAccount) (domain.Account, error)
+	//kakarot:http POST /accounts/{id}/deposits
+	//kakarot:grpc
 	Deposit(ctx context.Context, in domain.Deposit) (domain.Account, error)
+	//kakarot:http POST /transfers
+	//kakarot:grpc
 	Transfer(ctx context.Context, in domain.Transfer) (domain.TransferDone, error)
+	//kakarot:http GET /accounts/{id}/entries
+	//kakarot:grpc
 	ListEntries(ctx context.Context, in domain.ListEntries) (kakarot.Page[domain.Entry], error)
-	// ImportDeposits applies a stream of deposits.
+	// ImportDeposits takes one deposit per NDJSON line.
+	//
+	//kakarot:http POST /deposits/import
+	//kakarot:grpc
 	ImportDeposits(ctx context.Context, in iter.Seq2[domain.Deposit, error]) (domain.ImportResult, error)
 	// AuditTransfer handles the transfer.completed event.
+	//
+	//kakarot:queue transfer.completed
 	AuditTransfer(ctx context.Context, in domain.TransferDone) (domain.Audited, error)
 }
 

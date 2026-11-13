@@ -1,6 +1,6 @@
 # wallet
 
-A small money-transfer service built on kakarot. It shows every layer, with all bindings written as plain Go: no comment directives and no generated transport code.
+A small money-transfer service built on kakarot. It shows every layer. The routes, gRPC methods and queue topics are declared as comments on the service interface, and `kakarot gen` writes the endpoint and transport code from them.
 
 What it does:
 
@@ -17,20 +17,28 @@ What it does:
 domain/      request, response and event types (the DTOs), custom error code
 usecase/     business rules behind ports (Accounts, Events, Audit); unit-tested with fakes
 service/     WalletService: the contract, one method per operation
-endpoint/    one typed endpoint per service method, validation attached
-transport/   http.go, grpc.go, queue.go: one line of Go per binding
+endpoint/    generated: one typed endpoint per service method, validation attached
+transport/   generated: HTTP routes, gRPC service and client, queue bindings
 data/        storm models, generated store, the repository
 app/         hand-written wiring of all of the above
 cmd/server/  main: reads the environment and runs the servers
 ```
 
-A binding is one line, checked by the compiler:
+The contract carries the bindings:
 
 ```go
-g.Handle("POST /transfers", eps.Transfer, httpx.Name("Transfer"))      // transport/http.go
-grpcx.AddUnary(svc, "Transfer", eps.Transfer)                          // transport/grpc.go
-queue.Handle(c, TransferCompleted, "AuditTransfer", eps.AuditTransfer) // transport/queue.go
+//kakarot:service wallet
+type WalletService interface {
+    //kakarot:http POST /transfers
+    //kakarot:grpc
+    Transfer(ctx context.Context, in domain.Transfer) (domain.TransferDone, error)
+
+    //kakarot:queue transfer.completed
+    AuditTransfer(ctx context.Context, in domain.TransferDone) (domain.Audited, error)
+}
 ```
+
+After changing the interface, run `go generate ./service/...`.
 
 ## Run it
 

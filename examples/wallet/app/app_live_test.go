@@ -289,7 +289,7 @@ func TestLiveImportOverHTTP(t *testing.T) {
 // The same service over gRPC, through the generated client.
 func TestLiveGRPC(t *testing.T) {
 	s := start(t)
-	client := transport.GRPCClient(s.grpc)
+	client := transport.NewWalletGRPCClient(s.grpc)
 	alice := grpcx.WithBearer(t.Context(), "alice-secret")
 	bob := grpcx.WithBearer(t.Context(), "bob-secret")
 
