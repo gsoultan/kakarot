@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -110,8 +111,23 @@ type Relay struct {
 	MaxAttempts int32         // stop retrying an event after this many failures; default 10
 	Logger      *slog.Logger
 
-	stop chan struct{}
-	done chan struct{}
+	mu      sync.Mutex
+	stop    chan struct{}
+	done    chan struct{}
+	once    sync.Once
+	started bool
+}
+
+// channels returns the stop and done channels. serving marks that Serve has
+// started, so Shutdown knows whether there is anything to wait for.
+func (r *Relay) channels(serving bool) (stop, done chan struct{}, started bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.stop == nil {
+		r.stop, r.done = make(chan struct{}), make(chan struct{})
+	}
+	r.started = r.started || serving
+	return r.stop, r.done, r.started
 }
 
 // RunOnce publishes up to Batch pending events and reports how many were
@@ -172,8 +188,8 @@ func (r *Relay) log() *slog.Logger {
 // Serve runs the relay until Shutdown or ctx ends; it implements
 // kakarot.Server so App can run it beside the HTTP and gRPC servers.
 func (r *Relay) Serve(ctx context.Context) error {
-	r.stop, r.done = make(chan struct{}), make(chan struct{})
-	defer close(r.done)
+	stop, done, _ := r.channels(true)
+	defer close(done)
 	interval := r.Interval
 	if interval <= 0 {
 		interval = time.Second
@@ -189,7 +205,7 @@ func (r *Relay) Serve(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-r.stop:
+		case <-stop:
 			return nil
 		case <-time.After(interval):
 		}
@@ -198,12 +214,13 @@ func (r *Relay) Serve(ctx context.Context) error {
 
 // Shutdown stops the relay after its current batch.
 func (r *Relay) Shutdown(ctx context.Context) error {
-	if r.stop == nil {
-		return nil
+	stop, done, started := r.channels(false)
+	r.once.Do(func() { close(stop) })
+	if !started {
+		return nil // Serve never ran; if it starts later it stops at once
 	}
-	close(r.stop)
 	select {
-	case <-r.done:
+	case <-done:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
