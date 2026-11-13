@@ -52,7 +52,7 @@ service/     CheckoutService: five HTTP methods and four queue handlers, declare
 endpoint/    generated: one typed endpoint per method
 transport/   generated: HTTP routes and queue bindings
 data/        storm models, generated store, repositories, outbox events
-app/         wiring; the scheduled job; demo payment provider, warehouse and notifier
+app/         wiring (the expiry runs as a kakarot.Job); demo payment provider, warehouse and notifier
 cmd/server/  main
 ```
 
