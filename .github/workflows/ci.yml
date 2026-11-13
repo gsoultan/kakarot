@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        module: [".", transport/grpcx, transport/wsx, data, otelx, cmd/kakarot, examples/orders]
+        module: [".", transport/grpcx, transport/wsx, data, otelx, cmd/kakarot, examples/orders, examples/wallet]
     defaults:
       run:
         working-directory: ${{ matrix.module }}
