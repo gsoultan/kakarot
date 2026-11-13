@@ -12,3 +12,10 @@ A kakarot service. Layers, outside in:
 | data/       | storm repositories; `data/model` are DB types    | you + storm generate |
 
 After changing `service/service.go` or `data/model`, run `go generate ./...`.
+
+```console
+$ go test ./...            # usecase and HTTP tests run with no database
+$ go tool kakarot check    # layer rules, //kakarot: comments, generated code is current
+```
+
+`AGENTS.md` has the rules of the project and the steps to add an operation, for people and coding agents.

@@ -3,6 +3,7 @@
 //
 //	kakarot new <module path> [dir]
 //	kakarot gen [service dir]
+//	kakarot check [project dir]
 //
 // gen reads interfaces marked //kakarot:service [group] and writes
 // ../endpoint/endpoints_gen.go and, for methods marked //kakarot:http, the
@@ -50,11 +51,18 @@ func run(args []string) error {
 			dir = args[2]
 		}
 		return scaffold(args[1], dir)
+	case "check":
+		dir := "."
+		if len(args) > 1 {
+			dir = args[1]
+		}
+		return check(dir)
+	case "help", "-h", "--help":
+		fmt.Println(errUsage)
+		return nil
 	default:
-		return usage()
+		return fmt.Errorf("kakarot: unknown command %q\n\n%w", args[0], errUsage)
 	}
 }
 
-func usage() error {
-	return fmt.Errorf("usage:\n  kakarot new <module path> [dir]\n  kakarot gen [service dir]")
-}
+func usage() error { return errUsage }

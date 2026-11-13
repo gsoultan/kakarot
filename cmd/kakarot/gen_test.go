@@ -176,7 +176,7 @@ func TestScaffoldRefusesOverwrite(t *testing.T) {
 	if err := scaffold("example.com/acme/notes", dir); err != nil {
 		t.Fatal(err)
 	}
-	for _, f := range []string{"go.mod", "service/service.go", "data/model/note.go", "cmd/server/main.go"} {
+	for _, f := range []string{"go.mod", "service/service.go", "data/model/note.go", "cmd/server/main.go", "AGENTS.md", "usecase/note_test.go", "transport/http_test.go"} {
 		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
 			t.Error(err)
 		}

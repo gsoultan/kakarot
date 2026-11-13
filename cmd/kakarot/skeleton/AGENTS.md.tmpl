@@ -1,0 +1,76 @@
+# Working on [[.Name]]
+
+This file is for anyone changing this project, people and coding agents alike. [[.Name]] is a [kakarot](https://github.com/gsoultan/kakarot) service.
+
+## Commands
+
+```console
+$ go generate ./...        # after changing service/service.go or data/model
+$ go test ./...            # usecase and HTTP tests need no database
+$ go tool kakarot check    # layer rules, //kakarot: comments, generated code is current
+$ go vet ./... && gofmt -l .
+```
+
+A change is done when all four pass.
+
+## Layers
+
+Each package is one layer. A layer imports only the layers below it.
+
+| Package | Holds | May import |
+|---|---|---|
+| `cmd/server` | `main`: wiring by hand, no DI container | everything |
+| `transport/` | generated HTTP routes; tests of the API | `endpoint`, `domain` |
+| `endpoint/` | generated typed endpoints | `service`, `domain` |
+| `service/` | the API as a Go interface with `//kakarot:` comments | `usecase`, `domain` |
+| `usecase/` | business rules; ports (interfaces) for what they need | `domain` |
+| `domain/` | request, response and event types, validation | nothing in this project |
+| `data/` | storm repositories that implement the ports | `usecase`, `domain` |
+
+`go tool kakarot check` enforces this table.
+
+## Rules
+
+- Never edit `*_gen.go`, `*.gen.go` or anything in `data/store`. Change the source and run `go generate ./...`.
+- `usecase`, `service` and `domain` never import `net/http`, gRPC, storm or `data`. A usecase that needs the outside world declares an interface in `usecase` and `data` implements it.
+- Domain types are the DTOs: every layer above `data` speaks them. The types in `data/model` are database types and never leave `data`.
+- Return errors with `kakarot.E`, `kakarot.NotFound`, `kakarot.Invalid` or `kakarot.Conflict`. Transports map the code to a status. Compare with `kakarot.Is(err, code)`.
+- A request type with a `Validate() error` method is validated on every transport automatically.
+- Work that must happen together goes in one `Tx.Within(ctx, ...)` in the usecase. Repositories take the transaction from `ctx` with `data.Executor(ctx, db)`.
+
+## Add an operation
+
+1. Add the request and response types to `domain/`, with `Validate` if the request has rules.
+2. Write a failing test in `usecase/` with an in-memory port, then the usecase.
+3. Add the method to the interface in `service/service.go` with its comment, and implement it by calling the usecase:
+
+   ```go
+   //kakarot:http DELETE /notes/{id}
+   DeleteNote(ctx context.Context, in domain.DeleteNote) (domain.Deleted, error)
+   ```
+
+4. Add the usecase to `service.Usecases` and wire it in `cmd/server/main.go`.
+5. If it needs storage, add the method to the port and implement it in `data/`.
+6. Run the four commands above.
+
+Method shapes and comments:
+
+| Shape | Kind |
+|---|---|
+| `(ctx, Req) (Resp, error)` | request and response |
+| `(ctx, Req) iter.Seq2[Msg, error]` | server stream (SSE or NDJSON) |
+| `(ctx, iter.Seq2[Msg, error]) (Resp, error)` | client stream (NDJSON upload) |
+| `(ctx, iter.Seq2[In, error], func(Out) error) error` | two-way stream (WebSocket) |
+
+| Comment | Effect |
+|---|---|
+| `//kakarot:http METHOD /path/{id}` | HTTP route; `path:"id"`, `query:"q"` and `header:"X"` tags fill the request |
+| `//kakarot:grpc` | gRPC method |
+| `//kakarot:queue topic.name` | message handler for the topic |
+
+## Tests
+
+- Usecases: in-memory ports, call `Execute`. Use `kakarottest.Tx` when the usecase opens a transaction.
+- API: build the router with in-memory ports and call it with `kakarottest.Do`, as in `transport/http_test.go`.
+- Asynchronous results: `kakarottest.Eventually`. Time: pass `kakarottest.NewClock(...).Now`.
+- Repositories: test against a real PostgreSQL, skipped when no DSN is set.

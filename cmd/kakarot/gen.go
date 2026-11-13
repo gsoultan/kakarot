@@ -124,6 +124,10 @@ func generate(dir string) error {
 	return nil
 }
 
+// stale, when set, makes writeGo collect the files whose content on disk
+// differs from what would be generated, instead of writing them.
+var stale *[]string
+
 func writeGo(path string, tmpl *template.Template, data map[string]any) error {
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, data); err != nil {
@@ -133,6 +137,12 @@ func writeGo(path string, tmpl *template.Template, data map[string]any) error {
 	src, err := goimports.Process(path, buf.Bytes(), &goimports.Options{Comments: true, TabIndent: true, TabWidth: 8, FormatOnly: false})
 	if err != nil {
 		return fmt.Errorf("kakarot gen: %s: %w\n%s", path, err, buf.Bytes())
+	}
+	if stale != nil { // kakarot check: compare, do not write
+		if old, err := os.ReadFile(path); err != nil || !bytes.Equal(old, src) {
+			*stale = append(*stale, filepath.Clean(path))
+		}
+		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -172,9 +182,12 @@ func findServices(pkg *packages.Package) ([]serviceDecl, error) {
 			m := iface.Method(i)
 			md, err := classify(m)
 			if err != nil {
-				return nil, fmt.Errorf("%s.%s: %w", name, m.Name(), err)
+				return nil, fmt.Errorf("%s: %s.%s: %w\n%s", pkg.Fset.Position(m.Pos()), name, m.Name(), err, shapesHelp)
 			}
 			doc := comments[name+"."+m.Name()]
+			if err := checkDirectives(doc); err != nil {
+				return nil, fmt.Errorf("%s: %s.%s: %w", pkg.Fset.Position(m.Pos()), name, m.Name(), err)
+			}
 			md.HTTP, _ = directive(doc, "kakarot:http")
 			_, md.GRPC = directive(doc, "kakarot:grpc")
 			md.Queue, _ = directive(doc, "kakarot:queue")
@@ -272,6 +285,84 @@ func collectComments(pkg *packages.Package) map[string]string {
 		}
 	}
 	return out
+}
+
+// shapesHelp is appended to shape errors so the fix is in the message.
+const shapesHelp = `a service method must have one of these shapes:
+  (ctx context.Context, in Req) (Resp, error)                               endpoint
+  (ctx context.Context, in Req) iter.Seq2[Msg, error]                       server stream
+  (ctx context.Context, in iter.Seq2[Msg, error]) (Resp, error)             client stream
+  (ctx context.Context, in iter.Seq2[In, error], send func(Out) error) error  bidi stream`
+
+var knownDirectives = []string{"service", "http", "grpc", "queue"}
+
+var httpMethods = []string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
+
+// checkDirectives rejects a misspelled //kakarot: line, which would
+// otherwise be skipped silently, and a malformed //kakarot:http route.
+func checkDirectives(doc string) error {
+	for line := range strings.SplitSeq(doc, "\n") {
+		rest, ok := strings.CutPrefix(strings.TrimSpace(line), "kakarot:")
+		if !ok {
+			continue
+		}
+		word, arg, _ := strings.Cut(rest, " ")
+		arg = strings.TrimSpace(arg)
+		if !slices.Contains(knownDirectives, word) {
+			return fmt.Errorf("unknown directive //kakarot:%s%s; known directives are //kakarot:service, //kakarot:http, //kakarot:grpc and //kakarot:queue",
+				word, didYouMean(word))
+		}
+		switch word {
+		case "http":
+			verb, path, _ := strings.Cut(arg, " ")
+			if !slices.Contains(httpMethods, verb) || !strings.HasPrefix(strings.TrimSpace(path), "/") {
+				return fmt.Errorf("//kakarot:http %s: want a method and a path, for example //kakarot:http GET /orders/{id}", arg)
+			}
+		case "queue":
+			if arg == "" || strings.ContainsAny(arg, " \t") {
+				return fmt.Errorf("//kakarot:queue %q: want one topic name, for example //kakarot:queue order.placed", arg)
+			}
+		case "grpc":
+			if arg != "" {
+				return fmt.Errorf("//kakarot:grpc takes no argument, got %q", arg)
+			}
+		}
+	}
+	return nil
+}
+
+// didYouMean suggests the known directive closest to word.
+func didYouMean(word string) string {
+	best, bestD := "", 3
+	for _, k := range knownDirectives {
+		if d := editDistance(word, k); d < bestD {
+			best, bestD = k, d
+		}
+	}
+	if best == "" {
+		return ""
+	}
+	return " (did you mean //kakarot:" + best + "?)"
+}
+
+func editDistance(a, b string) int {
+	prev := make([]int, len(b)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		cur := make([]int, len(b)+1)
+		cur[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			cur[j] = min(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
+		}
+		prev = cur
+	}
+	return prev[len(b)]
 }
 
 func directive(doc, key string) (string, bool) {
