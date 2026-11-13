@@ -36,6 +36,18 @@ type Order struct {
 type PlaceOrder struct {
 	CustomerID string     `json:"customer_id"`
 	Items      []LineItem `json:"items"`
+	// Key makes a retried request safe: the same key replays the first
+	// response. HTTP callers send it as the Idempotency-Key header.
+	Key string `header:"Idempotency-Key" json:"idempotency_key,omitempty"`
+}
+
+// IdempotencyKey implements middleware.Keyed. The key is scoped to the
+// customer, so one customer cannot replay another's order.
+func (p PlaceOrder) IdempotencyKey() string {
+	if p.Key == "" {
+		return ""
+	}
+	return p.CustomerID + "/" + p.Key
 }
 
 // Validate implements middleware.Validatable.
@@ -83,4 +95,9 @@ type ExportOrders struct {
 // GetOrder is the input to read one order.
 type GetOrder struct {
 	ID string `path:"id"`
+}
+
+// Notified is the result of handling an order.placed event.
+type Notified struct {
+	OrderID string `json:"order_id"`
 }

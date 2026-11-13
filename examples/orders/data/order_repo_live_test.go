@@ -8,6 +8,7 @@ import (
 
 	"github.com/gsoultan/kakarot"
 	kdata "github.com/gsoultan/kakarot/data"
+	idemmodel "github.com/gsoultan/kakarot/data/idempotency/model"
 	"github.com/gsoultan/kakarot/data/outbox"
 	outboxmodel "github.com/gsoultan/kakarot/data/outbox/model"
 	"github.com/gsoultan/kakarot/examples/orders/data"
@@ -32,7 +33,7 @@ func setup(t *testing.T) (*data.OrderRepo, *kdata.TxManager) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	s, err := storm.Build(&model.Order{}, &model.OrderItem{}, &outboxmodel.OutboxEvent{})
+	s, err := storm.Build(&model.Order{}, &model.OrderItem{}, &outboxmodel.OutboxEvent{}, &idemmodel.IdempotencyRecord{})
 	if err != nil {
 		t.Fatal(err)
 	}

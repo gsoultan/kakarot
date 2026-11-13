@@ -12,19 +12,21 @@ import (
 
 // OrderEndpoints holds one typed endpoint or stream per OrderService method.
 type OrderEndpoints struct {
-	PlaceOrder   kakarot.Endpoint[domain.PlaceOrder, domain.Order]
-	GetOrder     kakarot.Endpoint[domain.GetOrder, domain.Order]
-	ListOrders   kakarot.Endpoint[domain.ListOrders, kakarot.Page[domain.Order]]
-	ExportOrders kakarot.ServerStream[domain.ExportOrders, domain.Order]
+	PlaceOrder        kakarot.Endpoint[domain.PlaceOrder, domain.Order]
+	GetOrder          kakarot.Endpoint[domain.GetOrder, domain.Order]
+	ListOrders        kakarot.Endpoint[domain.ListOrders, kakarot.Page[domain.Order]]
+	ExportOrders      kakarot.ServerStream[domain.ExportOrders, domain.Order]
+	NotifyOrderPlaced kakarot.Endpoint[domain.Order, domain.Notified]
 }
 
 // MakeOrderEndpoints builds the endpoints. Requests with a Validate
 // method are wrapped with middleware.Validated.
 func MakeOrderEndpoints(svc service.OrderService) OrderEndpoints {
 	return OrderEndpoints{
-		PlaceOrder:   middleware.Validated(svc.PlaceOrder),
-		GetOrder:     svc.GetOrder,
-		ListOrders:   middleware.Validated(svc.ListOrders),
-		ExportOrders: svc.ExportOrders,
+		PlaceOrder:        middleware.Validated(svc.PlaceOrder),
+		GetOrder:          svc.GetOrder,
+		ListOrders:        middleware.Validated(svc.ListOrders),
+		ExportOrders:      svc.ExportOrders,
+		NotifyOrderPlaced: svc.NotifyOrderPlaced,
 	}
 }

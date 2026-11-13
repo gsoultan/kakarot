@@ -17,13 +17,21 @@ import (
 //kakarot:service order
 type OrderService interface {
 	//kakarot:http POST /orders
+	//kakarot:grpc
 	PlaceOrder(ctx context.Context, in domain.PlaceOrder) (domain.Order, error)
 	//kakarot:http GET /orders/{id}
+	//kakarot:grpc
 	GetOrder(ctx context.Context, in domain.GetOrder) (domain.Order, error)
 	//kakarot:http GET /orders
+	//kakarot:grpc
 	ListOrders(ctx context.Context, in domain.ListOrders) (kakarot.Page[domain.Order], error)
 	//kakarot:http GET /orders/export
+	//kakarot:grpc
 	ExportOrders(ctx context.Context, in domain.ExportOrders) iter.Seq2[domain.Order, error]
+	// NotifyOrderPlaced handles the order.placed event from the outbox.
+	//
+	//kakarot:queue order.placed
+	NotifyOrderPlaced(ctx context.Context, in domain.Order) (domain.Notified, error)
 }
 
 // Usecases groups what the service composes.
@@ -32,6 +40,7 @@ type Usecases struct {
 	Get    kakarot.Usecase[domain.GetOrder, domain.Order]
 	List   kakarot.Usecase[domain.ListOrders, kakarot.Page[domain.Order]]
 	Export kakarot.ServerStream[domain.ExportOrders, domain.Order]
+	Notify kakarot.Usecase[domain.Order, domain.Notified]
 }
 
 type orderService struct{ uc Usecases }
@@ -53,4 +62,8 @@ func (s *orderService) ListOrders(ctx context.Context, in domain.ListOrders) (ka
 
 func (s *orderService) ExportOrders(ctx context.Context, in domain.ExportOrders) iter.Seq2[domain.Order, error] {
 	return s.uc.Export(ctx, in)
+}
+
+func (s *orderService) NotifyOrderPlaced(ctx context.Context, in domain.Order) (domain.Notified, error) {
+	return s.uc.Notify.Execute(ctx, in)
 }

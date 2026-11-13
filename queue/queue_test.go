@@ -66,7 +66,9 @@ func TestRetryableErrorIsRedeliveredOthersDeadLettered(t *testing.T) {
 	var dead []string
 	var result error
 	c := &queue.Consumer{Service: "billing", Source: b,
-		DeadLetter: func(_ context.Context, m queue.Message, err error) { dead = append(dead, m.ID+":"+kakarot.CodeOf(err).String()) }}
+		DeadLetter: func(_ context.Context, m queue.Message, err error) {
+			dead = append(dead, m.ID+":"+kakarot.CodeOf(err).String())
+		}}
 	queue.Handle(c, orderPlaced, "Charge", func(context.Context, placed) (struct{}, error) { return struct{}{}, result })
 	start(t, c, b, "order.placed")
 
@@ -108,6 +110,13 @@ func TestServeReturnsSubscriptionError(t *testing.T) {
 	c := &queue.Consumer{Source: failing{}}
 	queue.Handle(c, orderPlaced, "Charge", func(context.Context, placed) (struct{}, error) { return struct{}{}, nil })
 	if err := c.Serve(t.Context()); err == nil || err.Error() != "broker unreachable" {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestMemoryRefusesPublishWithoutSubscriber(t *testing.T) {
+	b := &queue.Memory{}
+	if err := b.Publish(t.Context(), queue.Message{Topic: "nobody"}); kakarot.CodeOf(err) != kakarot.CodeUnavailable {
 		t.Fatalf("err = %v", err)
 	}
 }

@@ -3,12 +3,15 @@ package queue
 import (
 	"context"
 	"sync"
+
+	"github.com/gsoultan/kakarot"
 )
 
 // Memory is an in-process broker. Publish calls every handler subscribed to
 // the message's topic and returns the first error, so a producer that
-// retries (such as the outbox relay) gives at-least-once delivery. Messages
-// published to a topic nobody subscribes to are dropped.
+// retries (such as the outbox relay) gives at-least-once delivery. Publishing
+// to a topic nobody subscribes to fails with CodeUnavailable instead of
+// dropping the message, so nothing is lost while consumers start.
 type Memory struct {
 	mu   sync.RWMutex
 	next int
@@ -44,6 +47,9 @@ func (b *Memory) Publish(ctx context.Context, m Message) error {
 		hs = append(hs, h)
 	}
 	b.mu.RUnlock()
+	if len(hs) == 0 {
+		return kakarot.E(kakarot.CodeUnavailable, "no subscriber for topic "+m.Topic, nil)
+	}
 	for _, h := range hs {
 		if err := h(ctx, m); err != nil {
 			return err

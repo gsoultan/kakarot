@@ -26,10 +26,11 @@ The core has no dependencies outside the Go standard library. Anything that pull
 
 | Module | Contents | Depends on |
 |---|---|---|
-| `github.com/gsoultan/kakarot` | core, `middleware`, `auth`, `transport/httpx` | standard library only |
-| `github.com/gsoultan/kakarot/transport/grpcx` | gRPC adapters | grpc-go |
+| `github.com/gsoultan/kakarot` | core, `middleware`, `auth`, `queue`, `transport/httpx` | standard library only |
+| `github.com/gsoultan/kakarot/transport/grpcx` | gRPC: interface-first service and clients, proto adapters | grpc-go |
 | `github.com/gsoultan/kakarot/transport/wsx` | WebSocket streams | coder/websocket |
-| `github.com/gsoultan/kakarot/data` | storm `TxManager`, error mapping, `outbox` | storm |
+| `github.com/gsoultan/kakarot/data` | storm `TxManager`, error mapping, `outbox`, `idempotency` | storm |
+| `github.com/gsoultan/kakarot/otelx` | OpenTelemetry tracing and metrics | opentelemetry-go |
 | `github.com/gsoultan/kakarot/cmd/kakarot` | CLI: `new`, `gen` | x/tools |
 | `examples/orders` | a complete service on every layer | all of the above |
 
@@ -38,8 +39,9 @@ endpoint.go stream.go errors.go   core: Endpoint, streams, Middleware, Wrap, Dec
 app.go page.go                    App (graceful run of many servers), keyset Page / cursors
 transport/httpx/                  HTTP: Router, Handle, Stream (SSE/NDJSON), Upload, OpenAPI 3.1
 middleware/                       Recover, Logging, Timeout, Validated, Retry, CircuitBreaker,
-                                  RateLimit, Idempotent
+                                  RateLimit, LoadShed, Idempotent
 auth/                             typed principal in context, Bearer, Require
+queue/                            message consumers on typed topics, in-process broker
 ```
 
 ## The layers
@@ -67,6 +69,7 @@ func (u *PlaceOrder) Execute(ctx context.Context, in domain.PlaceOrder) (domain.
 //kakarot:service order
 type OrderService interface {
     //kakarot:http POST /orders
+    //kakarot:grpc
     PlaceOrder(ctx context.Context, in domain.PlaceOrder) (domain.Order, error)
     //kakarot:http GET /orders/{id}
     GetOrder(ctx context.Context, in domain.GetOrder) (domain.Order, error)
@@ -74,6 +77,8 @@ type OrderService interface {
     ListOrders(ctx context.Context, in domain.ListOrders) (kakarot.Page[domain.Order], error)
     //kakarot:http GET /orders/export
     ExportOrders(ctx context.Context, in domain.ExportOrders) iter.Seq2[domain.Order, error]
+    //kakarot:queue order.placed
+    NotifyOrderPlaced(ctx context.Context, in domain.Order) (domain.Notified, error)
 }
 
 // main: wiring is plain Go
@@ -86,16 +91,25 @@ app.Run(ctx) // graceful shutdown on SIGINT/SIGTERM
 
 ## Code generation
 
-`kakarot gen` (run by `go generate` in the service package) writes `endpoint/endpoints_gen.go` and `transport/http_gen.go`. The method shape picks the kind:
+`kakarot gen` (run by `go generate` in the service package) reads the comments on your service interface:
 
-| Method shape | Kind | HTTP binding |
-|---|---|---|
-| `(ctx, Req) (Resp, error)` | `Endpoint` | `Handle` (JSON) |
-| `(ctx, Req) iter.Seq2[Msg, error]` | `ServerStream` | `Stream` (SSE or NDJSON) |
-| `(ctx, iter.Seq2[Msg, error]) (Resp, error)` | `ClientStream` | `Upload` (NDJSON body) |
-| `(ctx, iter.Seq2[In, error], func(Out) error) error` | `BidiStream` | `wsx.Handle` (WebSocket) |
+| Comment | Generates |
+|---|---|
+| `//kakarot:service order` on the interface | `endpoint/endpoints_gen.go`: one typed endpoint per method |
+| `//kakarot:http GET /orders/{id}` | `transport/http_gen.go`: `RegisterOrderHTTP` |
+| `//kakarot:grpc` | `transport/grpc_gen.go`: `RegisterOrderGRPC` and `NewOrderGRPCClient` |
+| `//kakarot:queue order.placed` | `transport/queue_gen.go`: a typed topic and `RegisterOrderQueue` |
 
-Requests with a `Validate() error` method are wrapped with `middleware.Validated`. Methods without `//kakarot:http` get an endpoint but no route. Dependency wiring is not generated; `main.go` stays explicit Go.
+The method shape picks the kind:
+
+| Method shape | Kind | HTTP | gRPC |
+|---|---|---|---|
+| `(ctx, Req) (Resp, error)` | `Endpoint` | `Handle` (JSON) | unary |
+| `(ctx, Req) iter.Seq2[Msg, error]` | `ServerStream` | `Stream` (SSE or NDJSON) | server streaming |
+| `(ctx, iter.Seq2[Msg, error]) (Resp, error)` | `ClientStream` | `Upload` (NDJSON body) | client streaming |
+| `(ctx, iter.Seq2[In, error], func(Out) error) error` | `BidiStream` | `wsx.Handle` (WebSocket) | bidirectional |
+
+Requests with a `Validate() error` method are wrapped with `middleware.Validated`, so validation runs on every transport. A method with no transport comment gets an endpoint but no binding. Dependency wiring is not generated; `main.go` stays explicit Go.
 
 ## HTTP
 
@@ -103,24 +117,62 @@ Requests decode from `path`, `query` and `header` tags plus a JSON body (unknown
 
 `Router.OpenAPI(info)` builds an OpenAPI 3.1 document from the registered routes' Go types; `ServeOpenAPI` serves it.
 
-## Streaming, gRPC, WebSocket
+## Streaming and WebSocket
 
 ```go
 // HTTP server stream: SSE when Accept: text/event-stream, NDJSON otherwise
 g.Stream("GET /orders/export", eps.ExportOrders)
-
-// gRPC: the same endpoint behind a generated proto server. in/out convert proto <-> domain.
-func (s *server) GetOrder(ctx context.Context, r *pb.GetOrderRequest) (*pb.Order, error) {
-    return s.getOrder(ctx, r)
-}
-s.getOrder = grpcx.Unary(op, eps.GetOrder, fromProto, toProto, middleware.Default(log, time.Second))
-// grpcx.ServerStream, ClientStream and Bidi adapt the generic grpc stream interfaces.
 
 // WebSocket: JSON frames both ways
 wsx.Handle(r, "GET /chat", eps.Chat, wsx.Options{OriginPatterns: []string{"app.example.com"}})
 ```
 
 Streams take the same shared middleware as endpoints; it wraps the whole stream.
+
+## gRPC
+
+**Interface-first (generated, no `.proto`).** Messages are your domain types encoded as JSON over standard gRPC framing, so deadlines, metadata, status codes, streaming and interceptors work as usual.
+
+```go
+// server
+gs := grpc.NewServer()
+transport.RegisterOrderGRPC(gs, eps, mws)
+servers = append(servers, &grpcx.Server{GRPC: gs, Addr: ":9090"})
+
+// client: the same OrderEndpoints type, each field calling the remote service
+client := transport.NewOrderGRPCClient(conn)
+order, err := client.GetOrder(ctx, domain.GetOrder{ID: id}) // err is a *kakarot.Error with the server's code
+get := kakarot.Wrap(op, client.GetOrder, middleware.Retry(policy)) // client-side middleware
+```
+
+Callers in other languages need a gRPC client with a JSON codec (content-subtype `json`). When they need protobuf instead, use the **proto adapters** next to your protoc output:
+
+```go
+s.getOrder = grpcx.Unary(op, eps.GetOrder, fromProto, toProto, mws...)
+// grpcx.ServerStream, ClientStream and Bidi adapt the generic grpc stream interfaces.
+```
+
+## Queue consumers
+
+A message handler is an ordinary endpoint, so it gets the same middleware, validation and tests as an HTTP route.
+
+```go
+broker := &queue.Memory{} // or your Kafka / NATS / SQS client behind queue.Subscriber
+consumer := &queue.Consumer{Service: "order", Source: broker, Logger: log}
+transport.RegisterOrderQueue(consumer, eps, mws) // generated from //kakarot:queue
+app.Servers = append(app.Servers, consumer)      // runs and stops with the app
+```
+
+A handler error asks the broker to redeliver, except errors a retry cannot fix (`invalid`, `not_found`, `unauthorized`, `forbidden`) and payloads that do not decode: those go to `Consumer.DeadLetter`. A broker is one method, `Subscribe(ctx, topic, handler)`.
+
+## Observability
+
+```go
+mws := kakarot.Chain(otelx.Middleware(), middleware.Default(log, 5*time.Second))
+r.Use(otelx.HTTP()) // continue the caller's trace (W3C traceparent)
+```
+
+One span and one `kakarot.call.duration` histogram point per call, on every transport, named by operation with the result code as an attribute. Only server faults (`internal`, `unavailable`, `timeout`) mark a span as an error. Request and response values are never recorded. Install any OpenTelemetry SDK and exporter in `main`; without one the middleware is a no-op.
 
 ## Auth
 
@@ -139,6 +191,7 @@ u, ok := auth.From[User](ctx) // typed, anywhere below transport
 
 ```go
 mws := []kakarot.Middleware{
+    middleware.LoadShed(512),                                              // over 512 in flight -> 503 at once
     middleware.RateLimit(100, 20),                                         // per op token bucket -> 429
     middleware.CircuitBreaker(middleware.BreakerPolicy{Failures: 5, OpenFor: 10 * time.Second}),
     middleware.Retry(middleware.RetryPolicy{Attempts: 3, BaseDelay: 50 * time.Millisecond}),
@@ -149,7 +202,7 @@ func (p PlaceOrder) IdempotencyKey() string { return p.Key }
 ep := kakarot.Decorate(op, eps.PlaceOrder, middleware.Idempotent[PlaceOrder, Order](store))
 ```
 
-`MemoryIdempotencyStore` is for one process; implement `IdempotencyStore[Resp]` on your database or Redis for more.
+`MemoryIdempotencyStore` is for one process. `data/idempotency.Store[Resp]{DB: db}` keeps responses in PostgreSQL through storm, so every instance replays them; add `&model.IdempotencyRecord{}` to your storm models and call `Purge` on a schedule.
 
 ## Events: transactional outbox
 
@@ -158,7 +211,7 @@ var OrderPlaced = outbox.Topic[domain.Order]("order.placed")
 
 OrderPlaced.Add(ctx, db, o.ID, o)   // inside TxManager.Within: committed with the order
 relay := &outbox.Relay{DB: db, Publisher: kafkaPublisher} // a kakarot.Server; FOR UPDATE SKIP LOCKED
-order, err := OrderPlaced.Decode(msg) // consumer side, typed
+relay = &outbox.Relay{DB: db, Publisher: outbox.ToQueue(broker)} // or straight into queue consumers
 ```
 
 Delivery is at least once; consumers should be idempotent.
@@ -211,14 +264,14 @@ Internal errors are logged with their cause and shown to callers only as `intern
 Each module is tested on its own:
 
 ```console
-$ for m in . transport/grpcx transport/wsx data cmd/kakarot; do (cd $m && go test -race ./...); done
+$ for m in . transport/grpcx transport/wsx data otelx cmd/kakarot; do (cd $m && go test -race ./...); done
 $ cd examples/orders && KAKAROT_TEST_DSN=postgres://user:pass@localhost:5432/orders go test -race ./...   # live storm tests
 $ go run golang.org/x/vuln/cmd/govulncheck@latest ./...   # in any module
 ```
 
 ## Not built yet
 
-- OpenTelemetry tracing and metrics middleware
-- gRPC code generation (`grpcx` adapters are written by hand next to the protoc output)
-- Message queue consumers (the outbox publishes; consuming is up to your broker client)
-- Dependency wiring generation
+- Broker adapters: `queue.Subscriber` is one method, but no Kafka, NATS or SQS implementation ships with kakarot.
+- A `.proto` file generated from the service interface, for protobuf clients in other languages.
+- gRPC trace propagation (use the `otelgrpc` stats handler on the gRPC server).
+- Dependency wiring generation: `main.go` is hand-written by design.
