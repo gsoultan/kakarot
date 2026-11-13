@@ -6,7 +6,6 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/gsoultan/kakarot"
@@ -55,7 +54,7 @@ type Checkout struct {
 	HTTP     *httpx.Router
 	Consumer *queue.Consumer
 	Relay    *outbox.Relay
-	Expiry   *Job
+	Expiry   *kakarot.Job
 }
 
 // Servers returns everything kakarot.App should run: the HTTP server for the
@@ -123,7 +122,7 @@ func Build(c Config) *Checkout {
 	relay := &outbox.Relay{DB: c.DB, Logger: log, Publisher: outbox.ToQueue(broker), Interval: c.RelayInterval}
 
 	expire := &usecase.ExpireOrders{Catalog: catalog, Orders: orders, Events: events, Tx: tx, After: c.PaymentWindow}
-	job := &Job{
+	job := &kakarot.Job{
 		Name: "expire-orders", Every: min(c.PaymentWindow/4, time.Minute), Logger: log,
 		Run: func(ctx context.Context) error {
 			n, err := expire.Run(ctx)
@@ -134,57 +133,4 @@ func Build(c Config) *Checkout {
 		},
 	}
 	return &Checkout{HTTP: r, Consumer: consumer, Relay: relay, Expiry: job}
-}
-
-// Job runs a function on a fixed interval. It is a kakarot.Server, so it
-// starts and stops with the application.
-type Job struct {
-	Name   string
-	Every  time.Duration
-	Run    func(ctx context.Context) error
-	Logger *slog.Logger
-
-	mu   sync.Mutex
-	stop chan struct{}
-	done chan struct{}
-}
-
-func (j *Job) channels() (stop, done chan struct{}) {
-	j.mu.Lock()
-	defer j.mu.Unlock()
-	if j.stop == nil {
-		j.stop, j.done = make(chan struct{}), make(chan struct{})
-	}
-	return j.stop, j.done
-}
-
-func (j *Job) Serve(ctx context.Context) error {
-	stop, done := j.channels()
-	defer close(done)
-	t := time.NewTicker(j.Every)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-stop:
-			return nil
-		case <-t.C:
-			if err := j.Run(ctx); err != nil {
-				j.Logger.ErrorContext(ctx, "job failed", "job", j.Name, "err", err)
-			}
-		}
-	}
-}
-
-// Shutdown stops the job after its current run. Call it once.
-func (j *Job) Shutdown(ctx context.Context) error {
-	stop, done := j.channels()
-	close(stop)
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
 }

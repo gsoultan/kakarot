@@ -42,5 +42,8 @@ jobs:
       - run: go test -race -p 1 ./...
         env:
           KAKAROT_TEST_DSN: postgres://kk:kk@localhost:5432/orders
+      - name: layer rules and generated code
+        if: startsWith(matrix.module, 'examples/')
+        run: go tool kakarot check
       - name: vulnerability scan
         run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...

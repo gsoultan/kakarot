@@ -9,6 +9,7 @@ import (
 	"github.com/gsoultan/kakarot"
 	"github.com/gsoultan/kakarot/examples/checkout/domain"
 	"github.com/gsoultan/kakarot/examples/checkout/usecase"
+	"github.com/gsoultan/kakarot/kakarottest"
 )
 
 // world is every port in memory. The business rules are tested with no
@@ -134,13 +135,9 @@ func (w *world) Refund(_ context.Context, chargeID string) error {
 // Warehouse
 func (w *world) Ship(_ context.Context, o domain.Order) (string, error) { return "TRK-" + o.ID, nil }
 
-type noTx struct{}
-
-func (noTx) Within(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) }
-
 func (w *world) place(t *testing.T) domain.Order {
 	t.Helper()
-	uc := &usecase.PlaceOrder{Catalog: w, Orders: ordersOf{w}, Events: w, Tx: noTx{}}
+	uc := &usecase.PlaceOrder{Catalog: w, Orders: ordersOf{w}, Events: w, Tx: &kakarottest.Tx{}}
 	o, err := uc.Execute(t.Context(), domain.PlaceOrder{Customer: "ana", PaymentToken: "tok", Items: []domain.Item{{SKU: "tea", Qty: 2}}})
 	if err != nil {
 		t.Fatal(err)
@@ -149,7 +146,7 @@ func (w *world) place(t *testing.T) domain.Order {
 }
 
 func (w *world) charge() *usecase.ChargePayment {
-	return &usecase.ChargePayment{Catalog: w, Orders: ordersOf{w}, Events: w, Payments: w, Tx: noTx{}}
+	return &usecase.ChargePayment{Catalog: w, Orders: ordersOf{w}, Events: w, Payments: w, Tx: &kakarottest.Tx{}}
 }
 
 func TestPlaceOrderReservesAndAsksForPayment(t *testing.T) {
@@ -198,9 +195,8 @@ func TestChargeOutageAsksForRedelivery(t *testing.T) {
 	w := newWorld()
 	o := w.place(t)
 	w.chargeErr = kakarot.E(kakarot.CodeUnavailable, "provider down", nil)
-	if _, err := w.charge().Execute(t.Context(), domain.OrderPlaced{OrderID: o.ID}); !kakarot.Is(err, kakarot.CodeUnavailable) {
-		t.Fatalf("err = %v", err)
-	}
+	_, err := w.charge().Execute(t.Context(), domain.OrderPlaced{OrderID: o.ID})
+	kakarottest.WantCode(t, err, kakarot.CodeUnavailable) // an error asks for redelivery
 	if w.orders[o.ID].Status != domain.StatusPending || w.stock["tea"] != 3 {
 		t.Fatal("an outage must leave the order waiting")
 	}
@@ -209,7 +205,7 @@ func TestChargeOutageAsksForRedelivery(t *testing.T) {
 func TestCancelDuringChargeRequestsRefund(t *testing.T) {
 	w := newWorld()
 	o := w.place(t)
-	cancel := &usecase.CancelOrder{Catalog: w, Orders: ordersOf{w}, Events: w, Tx: noTx{}}
+	cancel := &usecase.CancelOrder{Catalog: w, Orders: ordersOf{w}, Events: w, Tx: &kakarottest.Tx{}}
 	w.duringCharge = func() {
 		if _, err := cancel.Execute(t.Context(), domain.CancelOrder{ID: o.ID}); err != nil {
 			t.Error(err)
@@ -225,7 +221,7 @@ func TestCancelDuringChargeRequestsRefund(t *testing.T) {
 		t.Fatalf("refunds = %+v", w.refunds)
 	}
 
-	refund := &usecase.RefundPayment{Orders: ordersOf{w}, Events: w, Payments: w, Tx: noTx{}}
+	refund := &usecase.RefundPayment{Orders: ordersOf{w}, Events: w, Payments: w, Tx: &kakarottest.Tx{}}
 	for range 2 { // delivered twice, refunded once
 		if _, err := refund.Execute(t.Context(), w.refunds[0]); err != nil {
 			t.Fatal(err)
@@ -242,7 +238,7 @@ func TestCancelRules(t *testing.T) {
 	if _, err := w.charge().Execute(t.Context(), domain.OrderPlaced{OrderID: o.ID}); err != nil {
 		t.Fatal(err)
 	}
-	cancel := &usecase.CancelOrder{Catalog: w, Orders: ordersOf{w}, Events: w, Tx: noTx{}}
+	cancel := &usecase.CancelOrder{Catalog: w, Orders: ordersOf{w}, Events: w, Tx: &kakarottest.Tx{}}
 	if _, err := cancel.Execute(t.Context(), domain.CancelOrder{ID: o.ID}); !kakarot.Is(err, kakarot.CodeConflict) {
 		t.Fatalf("cancelling a paid order: %v", err)
 	}
@@ -254,7 +250,7 @@ func TestCancelRules(t *testing.T) {
 func TestShipOnlyPaidOrders(t *testing.T) {
 	w := newWorld()
 	o := w.place(t)
-	ship := &usecase.ShipOrder{Orders: ordersOf{w}, Events: w, Warehouse: w, Tx: noTx{}}
+	ship := &usecase.ShipOrder{Orders: ordersOf{w}, Events: w, Warehouse: w, Tx: &kakarottest.Tx{}}
 	if h, _ := ship.Execute(t.Context(), domain.OrderPaid{OrderID: o.ID}); !h.Skipped {
 		t.Fatal("shipped an unpaid order")
 	}
@@ -276,7 +272,7 @@ func TestExpireCancelsOnlyOldPendingOrders(t *testing.T) {
 		t.Fatal(err)
 	}
 	expire := &usecase.ExpireOrders{
-		Catalog: w, Orders: ordersOf{w}, Events: w, Tx: noTx{}, After: 15 * time.Minute,
+		Catalog: w, Orders: ordersOf{w}, Events: w, Tx: &kakarottest.Tx{}, After: 15 * time.Minute,
 		Now: func() time.Time { return time.Unix(1000, 0).Add(10 * time.Minute) },
 	}
 	if n, err := expire.Run(t.Context()); n != 0 || err != nil {

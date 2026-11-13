@@ -17,6 +17,7 @@ import (
 	"github.com/gsoultan/kakarot"
 	"github.com/gsoultan/kakarot/examples/checkout/app"
 	"github.com/gsoultan/kakarot/examples/checkout/domain"
+	"github.com/gsoultan/kakarot/kakarottest"
 	"github.com/gsoultan/storm"
 	"github.com/gsoultan/storm/migrate"
 	"github.com/gsoultan/storm/runtime/pgxdrv"
@@ -155,43 +156,22 @@ func start(t *testing.T, window time.Duration) *stack {
 		RelayInterval: 20 * time.Millisecond,
 	})
 	s.http = c.HTTP
-	servers := []kakarot.Server{c.Consumer, c.Relay, c.Expiry}
-	for _, srv := range servers {
-		go srv.Serve(context.Background())
-	}
-	t.Cleanup(func() {
-		for _, srv := range servers {
-			_ = srv.Shutdown(context.Background())
-		}
-	})
+	kakarottest.Serve(t, c.Consumer, c.Relay, c.Expiry)
 	return s
 }
 
+// call sends one request and returns the status and the decoded body.
 func call[T any](s *stack, method, path string, body any, hdr ...string) (int, T) {
 	s.t.Helper()
-	var rd io.Reader
-	if body != nil {
-		raw, _ := json.Marshal(body)
-		rd = bytes.NewReader(raw)
-	}
-	req := httptest.NewRequest(method, path, rd)
-	for i := 0; i+1 < len(hdr); i += 2 {
-		req.Header.Set(hdr[i], hdr[i+1])
-	}
-	w := httptest.NewRecorder()
-	s.http.ServeHTTP(w, req)
-	var out T
-	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil && w.Body.Len() > 0 {
-		s.t.Fatalf("%s %s: %d %s", method, path, w.Code, w.Body)
-	}
-	return w.Code, out
+	res := kakarottest.Do[T](s.t, s.http, method, path, body, hdr...)
+	return res.Status, res.Body
 }
 
-type errBody struct {
-	Error struct {
-		Code   string            `json:"code"`
-		Fields map[string]string `json:"fields"`
-	} `json:"error"`
+// fail sends a request that is expected to be refused.
+func fail(s *stack, method, path string, body any) (int, kakarottest.ErrorBody) {
+	s.t.Helper()
+	res := kakarottest.Do[kakarottest.None](s.t, s.http, method, path, body)
+	return res.Status, res.Error
 }
 
 func (s *stack) product(sku string, price, stock int64) {
@@ -219,32 +199,16 @@ func (s *stack) place(token string, items ...domain.Item) domain.Order {
 // until polls the order, as a client would, until ok is satisfied.
 func (s *stack) until(id, what string, ok func(domain.Order) bool) domain.Order {
 	s.t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		_, o := call[domain.Order](s, "GET", "/orders/"+id, nil)
-		if ok(o) {
-			return o
-		}
-		if time.Now().After(deadline) {
-			s.t.Fatalf("order never became %s: %+v", what, o)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	var o domain.Order
+	kakarottest.Eventually(s.t, 10*time.Second, "order "+what, func() bool {
+		_, o = call[domain.Order](s, "GET", "/orders/"+id, nil)
+		return ok(o)
+	})
+	return o
 }
 
 func is(st domain.Status) func(domain.Order) bool {
 	return func(o domain.Order) bool { return o.Status == st }
-}
-
-func (s *stack) eventually(what string, ok func() bool) {
-	s.t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for !ok() {
-		if time.Now().After(deadline) {
-			s.t.Fatalf("never happened: %s", what)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
 }
 
 // The request returns at once with a pending order; payment and shipping
@@ -273,7 +237,7 @@ func TestLiveOrderIsPaidAndShippedInTheBackground(t *testing.T) {
 	if !slices.Equal(trail, []domain.Status{domain.StatusPending, domain.StatusPaid, domain.StatusShipped}) {
 		t.Fatalf("timeline = %v", trail)
 	}
-	s.eventually("two notifications", func() bool { return len(s.inbox.notes(o.ID)) == 2 })
+	kakarottest.Eventually(t, 10*time.Second, "two notifications", func() bool { return len(s.inbox.notes(o.ID)) == 2 })
 	if charges, refunds, _ := s.pay.snapshot(); charges != 1 || len(refunds) != 0 {
 		t.Fatalf("charges=%d refunds=%v", charges, refunds)
 	}
@@ -298,17 +262,17 @@ func TestLiveOutOfStockIsRefusedSynchronously(t *testing.T) {
 	s := start(t, time.Hour)
 	s.product("tea", 500, 2)
 	s.product("cup", 1200, 9)
-	code, body := call[errBody](s, "POST", "/orders", domain.PlaceOrder{
+	code, body := fail(s, "POST", "/orders", domain.PlaceOrder{
 		Customer: "ana", PaymentToken: "ok",
 		Items: []domain.Item{{SKU: "cup", Qty: 1}, {SKU: "tea", Qty: 3}},
 	})
-	if code != http.StatusConflict || body.Error.Code != "out_of_stock" || body.Error.Fields["tea"] != "only 2 left" {
+	if code != http.StatusConflict || body.Code != "out_of_stock" || body.Fields["tea"] != "only 2 left" {
 		t.Fatalf("%d %+v", code, body)
 	}
 	if s.stock("cup") != 9 {
 		t.Fatal("a refused order kept stock")
 	}
-	if code, _ := call[errBody](s, "POST", "/orders", domain.PlaceOrder{Customer: "ana"}); code != http.StatusBadRequest {
+	if code, _ := fail(s, "POST", "/orders", domain.PlaceOrder{Customer: "ana"}); code != http.StatusBadRequest {
 		t.Fatalf("invalid order: %d", code)
 	}
 }
@@ -361,10 +325,10 @@ func TestLivePaidOrderCannotBeCancelled(t *testing.T) {
 	s.product("tea", 500, 5)
 	o := s.place("ok", domain.Item{SKU: "tea", Qty: 1})
 	s.until(o.ID, "shipped", is(domain.StatusShipped))
-	if code, body := call[errBody](s, "POST", "/orders/"+o.ID+"/cancel", nil); code != http.StatusConflict || body.Error.Code != "conflict" {
+	if code, body := fail(s, "POST", "/orders/"+o.ID+"/cancel", nil); code != http.StatusConflict || body.Code != "conflict" {
 		t.Fatalf("%d %+v", code, body)
 	}
-	if code, _ := call[errBody](s, "GET", "/orders/nope", nil); code != http.StatusNotFound {
+	if code, _ := fail(s, "GET", "/orders/nope", nil); code != http.StatusNotFound {
 		t.Fatalf("unknown order: %d", code)
 	}
 }
