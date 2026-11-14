@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"iter"
+	"reflect"
 
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
@@ -29,8 +30,8 @@ import (
 //
 // Callers use the typed helpers Invoke, Receive, Send and Duplex, or any
 // gRPC client with a JSON codec. `kakarot gen` writes both sides from a
-// service interface marked //kakarot:grpc. Use the proto adapters (Unary,
-// ServerStream, ...) instead when clients need protobuf.
+// service interface marked //kakarot:grpc. For clients in other languages,
+// Service.Proto writes a .proto file and EnableProtobuf serves protobuf.
 
 // JSONSubtype is the gRPC content-subtype of interface-first services.
 const JSONSubtype = "json"
@@ -44,8 +45,8 @@ func (jsonCodec) Marshal(v any) ([]byte, error) { return json.Marshal(v) }
 // handler decodes them itself and reports a bad message as CodeInvalid;
 // gRPC reports a codec failure as Internal.
 func (jsonCodec) Unmarshal(b []byte, v any) error {
-	if raw, ok := v.(*json.RawMessage); ok {
-		*raw = append((*raw)[:0], b...)
+	if raw, ok := v.(*rawMessage); ok {
+		raw.bytes, raw.proto = append(raw.bytes[:0], b...), false
 		return nil
 	}
 	return json.Unmarshal(b, v)
@@ -55,12 +56,18 @@ func (jsonCodec) Unmarshal(b []byte, v any) error {
 func decode[M any](recv func(any) error) (M, error) {
 	var (
 		m   M
-		raw json.RawMessage
+		raw rawMessage
 	)
 	if err := recv(&raw); err != nil {
 		return m, err // io.EOF or a transport status
 	}
-	if err := json.Unmarshal(raw, &m); err != nil {
+	err := error(nil)
+	if raw.proto {
+		err = unmarshalProto(raw.bytes, &m)
+	} else {
+		err = json.Unmarshal(raw.bytes, &m)
+	}
+	if err != nil {
 		return m, kakarot.E(kakarot.CodeInvalid, "malformed message", err)
 	}
 	return m, nil
@@ -75,6 +82,7 @@ type Service struct {
 	mws     []kakarot.Middleware
 	methods []grpc.MethodDesc
 	streams []grpc.StreamDesc
+	rpcs    []rpc
 }
 
 // NewService starts a service named name ("order.OrderService"). mws are
@@ -102,6 +110,7 @@ func (s *Service) op(method string) kakarot.Op {
 
 // AddUnary serves an endpoint as a unary method.
 func AddUnary[Req, Resp any](s *Service, method string, e kakarot.Endpoint[Req, Resp]) {
+	s.rpcs = append(s.rpcs, rpc{name: method, in: reflect.TypeFor[Req](), out: reflect.TypeFor[Resp](), clientStream: false, serverStream: false})
 	e = kakarot.Wrap(s.op(method), e, s.mws...)
 	info := &grpc.UnaryServerInfo{Server: s, FullMethod: fullMethod(s.name, method)}
 	s.methods = append(s.methods, grpc.MethodDesc{
@@ -137,6 +146,7 @@ func AddUnary[Req, Resp any](s *Service, method string, e kakarot.Endpoint[Req, 
 
 // AddServerStream serves a server stream.
 func AddServerStream[Req, Msg any](s *Service, method string, st kakarot.ServerStream[Req, Msg]) {
+	s.rpcs = append(s.rpcs, rpc{name: method, in: reflect.TypeFor[Req](), out: reflect.TypeFor[Msg](), clientStream: false, serverStream: true})
 	st = kakarot.WrapServerStream(s.op(method), st, s.mws...)
 	s.streams = append(s.streams, grpc.StreamDesc{
 		StreamName:    method,
@@ -161,6 +171,7 @@ func AddServerStream[Req, Msg any](s *Service, method string, st kakarot.ServerS
 
 // AddClientStream serves a client stream.
 func AddClientStream[Msg, Resp any](s *Service, method string, st kakarot.ClientStream[Msg, Resp]) {
+	s.rpcs = append(s.rpcs, rpc{name: method, in: reflect.TypeFor[Msg](), out: reflect.TypeFor[Resp](), clientStream: true, serverStream: false})
 	st = kakarot.WrapClientStream(s.op(method), st, s.mws...)
 	s.streams = append(s.streams, grpc.StreamDesc{
 		StreamName:    method,
@@ -177,6 +188,7 @@ func AddClientStream[Msg, Resp any](s *Service, method string, st kakarot.Client
 
 // AddBidi serves a bidirectional stream.
 func AddBidi[In, Out any](s *Service, method string, st kakarot.BidiStream[In, Out]) {
+	s.rpcs = append(s.rpcs, rpc{name: method, in: reflect.TypeFor[In](), out: reflect.TypeFor[Out](), clientStream: true, serverStream: true})
 	st = kakarot.WrapBidiStream(s.op(method), st, s.mws...)
 	s.streams = append(s.streams, grpc.StreamDesc{
 		StreamName:    method,
