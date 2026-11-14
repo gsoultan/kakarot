@@ -118,3 +118,20 @@ func HTTP() func(http.Handler) http.Handler {
 func Inject(ctx context.Context, h http.Header) {
 	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(h))
 }
+
+// Headers returns the trace context of ctx as plain key/value pairs, for
+// transports that are not HTTP: gRPC metadata or message headers.
+//
+//	grpcx.Carrier{Inject: otelx.Headers, Extract: otelx.WithHeaders}
+//	msg.Headers = otelx.Headers(ctx)
+func Headers(ctx context.Context) map[string]string {
+	h := propagation.MapCarrier{}
+	otel.GetTextMapPropagator().Inject(ctx, h)
+	return h
+}
+
+// WithHeaders returns ctx continuing the trace found in headers, the
+// counterpart of Headers. Use it as queue.Consumer.Extract.
+func WithHeaders(ctx context.Context, headers map[string]string) context.Context {
+	return otel.GetTextMapPropagator().Extract(ctx, propagation.MapCarrier(headers))
+}

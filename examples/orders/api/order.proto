@@ -1,0 +1,58 @@
+// Written by kakarot from the Go service order.OrderService. Do not edit.
+// Field numbers follow the order of the Go struct fields: add new fields at
+// the end, or pin a number with a `proto:"N"` struct tag.
+
+syntax = "proto3";
+
+package order;
+
+import "google/protobuf/timestamp.proto";
+
+service OrderService {
+  rpc PlaceOrder(PlaceOrder) returns (Order);
+  rpc GetOrder(GetOrder) returns (Order);
+  rpc ListOrders(ListOrders) returns (PageOrder);
+  rpc ExportOrders(ExportOrders) returns (stream Order);
+}
+
+message PlaceOrder {
+  string customer_id = 1 [json_name = "customer_id"];
+  repeated LineItem items = 2;
+  string idempotency_key = 3 [json_name = "idempotency_key"];
+}
+
+message LineItem {
+  string sku = 1;
+  int32 quantity = 2;
+}
+
+message Order {
+  string id = 1;
+  string customer_id = 2 [json_name = "customer_id"];
+  string status = 3;
+  repeated LineItem items = 4;
+  google.protobuf.Timestamp created_at = 5 [json_name = "created_at"];
+}
+
+message GetOrder {
+  string id = 1 [json_name = "ID"];
+}
+
+message ListOrders {
+  string customer_id = 1 [json_name = "CustomerID"];
+  PageRequest page_request = 2 [json_name = "PageRequest"];
+}
+
+message PageRequest {
+  string cursor = 1 [json_name = "Cursor"];
+  int64 limit = 2 [json_name = "Limit"];
+}
+
+message PageOrder {
+  repeated Order items = 1;
+  string next = 2;
+}
+
+message ExportOrders {
+  string customer_id = 1 [json_name = "CustomerID"];
+}

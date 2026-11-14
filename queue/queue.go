@@ -48,11 +48,14 @@ func (t Topic[T]) Decode(m Message) (T, error) {
 
 // Message is one delivery from a broker.
 type Message struct {
-	ID       string
-	Topic    string
-	Key      string // partition or ordering key
-	Payload  []byte // JSON
-	Attempts int32  // earlier failed deliveries, when the broker knows
+	ID      string
+	Topic   string
+	Key     string // partition or ordering key
+	Payload []byte // JSON
+	// Headers carry values beside the payload, such as a trace context.
+	// A broker adapter maps them to the broker's own message headers.
+	Headers  map[string]string
+	Attempts int32 // earlier failed deliveries, when the broker knows
 }
 
 // Handler processes one message. Returning nil acknowledges it; returning an
@@ -80,6 +83,10 @@ type Consumer struct {
 	// DeadLetter receives messages that will not be retried: undecodable
 	// payloads and non-retryable errors. The default logs them.
 	DeadLetter func(ctx context.Context, m Message, err error)
+	// Extract, when set, builds the handler's context from a message's
+	// headers, for example to continue the publisher's trace
+	// (otelx.WithHeaders).
+	Extract func(ctx context.Context, headers map[string]string) context.Context
 
 	mu     sync.Mutex
 	subs   []subscription
@@ -99,6 +106,9 @@ func Handle[T, Resp any](c *Consumer, topic Topic[T], name string, e kakarot.End
 	op := kakarot.Op{Service: c.Service, Method: name, Transport: "queue"}
 	e = kakarot.Wrap(op, e, append(append([]kakarot.Middleware{}, c.Middleware...), mws...)...)
 	h := func(ctx context.Context, m Message) error {
+		if c.Extract != nil {
+			ctx = c.Extract(ctx, m.Headers)
+		}
 		in, err := topic.Decode(m)
 		if err != nil {
 			c.deadLetter(ctx, m, err)

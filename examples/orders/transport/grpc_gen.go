@@ -13,16 +13,22 @@ import (
 // OrderGRPCService is the gRPC service name of OrderService.
 const OrderGRPCService = "order.OrderService"
 
-// RegisterOrderGRPC serves every //kakarot:grpc method of OrderService
-// on r, with the domain types as JSON messages (no .proto needed).
-// mws are shared endpoint middleware for the whole service.
-func RegisterOrderGRPC(r grpc.ServiceRegistrar, eps endpoint.OrderEndpoints, mws ...kakarot.Middleware) {
+// OrderGRPC builds the gRPC service of every //kakarot:grpc method of
+// OrderService. Its Proto method writes a .proto file for clients in other
+// languages. mws are shared endpoint middleware for the whole service.
+func OrderGRPC(eps endpoint.OrderEndpoints, mws ...kakarot.Middleware) *grpcx.Service {
 	svc := grpcx.NewService(OrderGRPCService, mws...)
 	grpcx.AddUnary(svc, "PlaceOrder", eps.PlaceOrder)
 	grpcx.AddUnary(svc, "GetOrder", eps.GetOrder)
 	grpcx.AddUnary(svc, "ListOrders", eps.ListOrders)
 	grpcx.AddServerStream(svc, "ExportOrders", eps.ExportOrders)
-	svc.Register(r)
+	return svc
+}
+
+// RegisterOrderGRPC serves OrderGRPC on r, with the domain types as
+// JSON messages (no .proto needed).
+func RegisterOrderGRPC(r grpc.ServiceRegistrar, eps endpoint.OrderEndpoints, mws ...kakarot.Middleware) {
+	OrderGRPC(eps, mws...).Register(r)
 }
 
 // NewOrderGRPCClient returns the same endpoints as the server, each

@@ -276,3 +276,51 @@ func TestErrorsKeepCodeAndFieldsOverTheWire(t *testing.T) {
 		t.Fatalf("fields lost: %+v", e)
 	}
 }
+
+type requestIDKey struct{}
+
+func TestCarrierMovesContextValuesAcrossCalls(t *testing.T) {
+	carrier := grpcx.Carrier{
+		Inject: func(ctx context.Context) map[string]string {
+			id, _ := ctx.Value(requestIDKey{}).(string)
+			return map[string]string{"x-request-id": id}
+		},
+		Extract: func(ctx context.Context, h map[string]string) context.Context {
+			return context.WithValue(ctx, requestIDKey{}, h["x-request-id"])
+		},
+	}
+	seen := func(ctx context.Context) string {
+		id, _ := ctx.Value(requestIDKey{}).(string)
+		return id
+	}
+	svc := grpcx.NewService("echo.Echo")
+	grpcx.AddUnary(svc, "ID", func(ctx context.Context, _ struct{}) (string, error) { return seen(ctx), nil })
+	grpcx.AddServerStream(svc, "IDs", func(ctx context.Context, _ struct{}) iter.Seq2[string, error] {
+		return kakarot.SliceStream([]string{seen(ctx)})
+	})
+	su, ss := carrier.Server()
+	s := grpc.NewServer(grpc.ChainUnaryInterceptor(su), grpc.ChainStreamInterceptor(ss))
+	svc.Register(s)
+	lis := bufconn.Listen(1 << 20)
+	srv := &grpcx.Server{GRPC: s, Listener: lis}
+	go srv.Serve(t.Context())
+	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
+	cu, cs := carrier.Client()
+	conn, err := grpc.NewClient("passthrough:///buf",
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) }),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithChainUnaryInterceptor(cu), grpc.WithChainStreamInterceptor(cs))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+
+	ctx := context.WithValue(t.Context(), requestIDKey{}, "req-42")
+	if got, err := grpcx.Invoke[struct{}, string](conn, "echo.Echo", "ID")(ctx, struct{}{}); err != nil || got != "req-42" {
+		t.Fatalf("unary: %q %v", got, err)
+	}
+	got, err := kakarot.Collect(grpcx.Receive[struct{}, string](conn, "echo.Echo", "IDs")(ctx, struct{}{}))
+	if err != nil || len(got) != 1 || got[0] != "req-42" {
+		t.Fatalf("stream: %v %v", got, err)
+	}
+}

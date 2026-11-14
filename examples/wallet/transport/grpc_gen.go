@@ -13,10 +13,10 @@ import (
 // WalletGRPCService is the gRPC service name of WalletService.
 const WalletGRPCService = "wallet.WalletService"
 
-// RegisterWalletGRPC serves every //kakarot:grpc method of WalletService
-// on r, with the domain types as JSON messages (no .proto needed).
-// mws are shared endpoint middleware for the whole service.
-func RegisterWalletGRPC(r grpc.ServiceRegistrar, eps endpoint.WalletEndpoints, mws ...kakarot.Middleware) {
+// WalletGRPC builds the gRPC service of every //kakarot:grpc method of
+// WalletService. Its Proto method writes a .proto file for clients in other
+// languages. mws are shared endpoint middleware for the whole service.
+func WalletGRPC(eps endpoint.WalletEndpoints, mws ...kakarot.Middleware) *grpcx.Service {
 	svc := grpcx.NewService(WalletGRPCService, mws...)
 	grpcx.AddUnary(svc, "OpenAccount", eps.OpenAccount)
 	grpcx.AddUnary(svc, "GetAccount", eps.GetAccount)
@@ -24,7 +24,13 @@ func RegisterWalletGRPC(r grpc.ServiceRegistrar, eps endpoint.WalletEndpoints, m
 	grpcx.AddUnary(svc, "Transfer", eps.Transfer)
 	grpcx.AddUnary(svc, "ListEntries", eps.ListEntries)
 	grpcx.AddClientStream(svc, "ImportDeposits", eps.ImportDeposits)
-	svc.Register(r)
+	return svc
+}
+
+// RegisterWalletGRPC serves WalletGRPC on r, with the domain types as
+// JSON messages (no .proto needed).
+func RegisterWalletGRPC(r grpc.ServiceRegistrar, eps endpoint.WalletEndpoints, mws ...kakarot.Middleware) {
+	WalletGRPC(eps, mws...).Register(r)
 }
 
 // NewWalletGRPCClient returns the same endpoints as the server, each

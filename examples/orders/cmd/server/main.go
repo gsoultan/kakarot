@@ -90,6 +90,7 @@ func run(ctx context.Context) error {
 	transport.RegisterOrderHTTP(r, eps, mws)
 	r.ServeOpenAPI("GET /openapi.json", httpx.Info{Title: "orders", Version: "0.1.0"})
 
+	grpcx.EnableProtobuf() // protobuf clients use api/order.proto; Go clients keep JSON
 	gs := grpc.NewServer()
 	transport.RegisterOrderGRPC(gs, eps, mws)
 
