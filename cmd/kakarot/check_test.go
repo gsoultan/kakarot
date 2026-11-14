@@ -15,7 +15,7 @@ func project(t *testing.T, files map[string]string) string {
 	_, self, _, _ := runtime.Caller(0)
 	root := filepath.Join(filepath.Dir(self), "..", "..")
 	dir := t.TempDir()
-	files["go.mod"] = "module example.com/shop\n\ngo 1.27.4\n\nrequire github.com/gsoultan/kakarot v0.0.0\n\nreplace github.com/gsoultan/kakarot => " + root + "\n"
+	files["go.mod"] = "module example.com/shop\n\ngo 1.27.4\n\nrequire github.com/gsoultan/kakarot v0.1.0\n\nreplace github.com/gsoultan/kakarot => " + root + "\n"
 	for p, s := range files {
 		p = filepath.Join(dir, p)
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
