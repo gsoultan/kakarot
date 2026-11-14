@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -18,7 +19,9 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/gsoultan/kakarot"
+	"github.com/gsoultan/kakarot/kakarottest"
 	"github.com/gsoultan/kakarot/otelx"
+	"github.com/gsoultan/kakarot/queue"
 	"github.com/gsoultan/kakarot/transport/httpx"
 )
 
@@ -128,5 +131,46 @@ func TestHTTPContinuesCallerTrace(t *testing.T) {
 	}
 	if server.Parent().SpanID() != parent.SpanContext().SpanID() || server.SpanContext().TraceID() != parent.SpanContext().TraceID() {
 		t.Fatal("server span is not a child of the caller's span")
+	}
+}
+
+// A trace crosses any transport as plain headers: gRPC metadata or the
+// headers of a queue message.
+func TestHeadersCarryTheTraceToAQueueHandler(t *testing.T) {
+	mw, rec, _, tp := setup(t)
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+
+	const topic queue.Topic[string] = "greeted"
+	broker := &queue.Memory{}
+	c := &queue.Consumer{Service: "mail", Source: broker, Extract: otelx.WithHeaders, Middleware: []kakarot.Middleware{mw}}
+	queue.Handle(c, topic, "Send", func(context.Context, string) (string, error) { return "ok", nil })
+	kakarottest.Serve(t, c)
+	kakarottest.Eventually(t, time.Second, "subscribed", func() bool { return broker.Subscribers("greeted") > 0 })
+
+	// The publisher's span travels in the message headers.
+	ctx, parent := tp.Tracer("publisher").Start(t.Context(), "publish")
+	m, err := topic.Encode("k", "hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Headers = otelx.Headers(ctx)
+	parent.End()
+	if m.Headers["traceparent"] == "" {
+		t.Fatal("Headers wrote no traceparent")
+	}
+	if err := broker.Publish(t.Context(), m); err != nil {
+		t.Fatal(err)
+	}
+	var handler sdktrace.ReadOnlySpan
+	for _, s := range rec.Ended() {
+		if s.Name() == "mail.Send" {
+			handler = s
+		}
+	}
+	if handler == nil {
+		t.Fatalf("no handler span among %d", len(rec.Ended()))
+	}
+	if handler.Parent().SpanID() != parent.SpanContext().SpanID() {
+		t.Fatal("the handler's span is not a child of the publisher's span")
 	}
 }
