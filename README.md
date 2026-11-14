@@ -29,10 +29,11 @@ The core has no dependencies outside the Go standard library. Anything that pull
 | Module | Contents | Depends on |
 |---|---|---|
 | `github.com/gsoultan/kakarot` | core, `middleware`, `auth`, `queue`, `transport/httpx`, `kakarottest` | standard library only |
-| `github.com/gsoultan/kakarot/transport/grpcx` | gRPC: interface-first service and clients, proto adapters | grpc-go |
+| `github.com/gsoultan/kakarot/transport/grpcx` | gRPC: interface-first service and clients, `.proto` file and protobuf clients, proto adapters | grpc-go |
 | `github.com/gsoultan/kakarot/transport/wsx` | WebSocket streams | coder/websocket |
 | `github.com/gsoultan/kakarot/data` | storm `TxManager`, error mapping, `outbox`, `idempotency` | storm |
 | `github.com/gsoultan/kakarot/otelx` | OpenTelemetry tracing and metrics | opentelemetry-go |
+| `github.com/gsoultan/kakarot/natsx` | NATS JetStream broker for queue consumers and the outbox relay | nats.go |
 | `github.com/gsoultan/kakarot/cmd/kakarot` | CLI: `new`, `gen`, `check` | x/tools |
 | `examples/orders` | a complete service on every layer | all of the above |
 | `examples/checkout` | a synchronous request followed by asynchronous payment, shipping, compensation and expiry | core, `data` |
@@ -102,7 +103,7 @@ app.Run(ctx) // graceful shutdown on SIGINT/SIGTERM
 |---|---|
 | `//kakarot:service order` on the interface | `endpoint/endpoints_gen.go`: one typed endpoint per method |
 | `//kakarot:http GET /orders/{id}` | `transport/http_gen.go`: `RegisterOrderHTTP` |
-| `//kakarot:grpc` | `transport/grpc_gen.go`: `RegisterOrderGRPC` and `NewOrderGRPCClient` |
+| `//kakarot:grpc` | `transport/grpc_gen.go`: `OrderGRPC`, `RegisterOrderGRPC` and `NewOrderGRPCClient` |
 | `//kakarot:queue order.placed` | `transport/queue_gen.go`: a typed topic and `RegisterOrderQueue` |
 
 The method shape picks the kind:
@@ -229,7 +230,28 @@ order, err := client.GetOrder(ctx, domain.GetOrder{ID: id}) // err is a *kakarot
 get := kakarot.Wrap(op, client.GetOrder, middleware.Retry(policy)) // client-side middleware
 ```
 
-Callers in other languages need a gRPC client with a JSON codec (content-subtype `json`). When they need protobuf instead, use the **proto adapters** next to your protoc output:
+**Clients in other languages** get a `.proto` file written from the same service, and the server answers protobuf as well as JSON:
+
+```go
+grpcx.EnableProtobuf()                            // once in main
+schema, err := transport.OrderGRPC(eps).Proto()   // the contract: commit it as api/order.proto
+```
+
+```proto
+service OrderService {
+  rpc GetOrder(GetOrder) returns (Order);
+  rpc ExportOrders(ExportOrders) returns (stream Order);
+}
+message Order {
+  string id = 1;
+  repeated LineItem items = 4;
+  google.protobuf.Timestamp created_at = 5 [json_name = "created_at"];
+}
+```
+
+One description of the Go types drives both the file and the wire format, so they cannot disagree. Field numbers follow the order of the struct's fields: add fields at the end, or pin a number with a `proto:"N"` tag. `examples/orders` keeps the file under a test that fails when it drifts. The full type mapping is in [docs/protobuf.md](docs/protobuf.md).
+
+If you already have protoc output, use the **proto adapters** next to it:
 
 ```go
 s.getOrder = grpcx.Unary(op, eps.GetOrder, fromProto, toProto, mws...)
@@ -241,13 +263,23 @@ s.getOrder = grpcx.Unary(op, eps.GetOrder, fromProto, toProto, mws...)
 A message handler is an ordinary endpoint, so it gets the same middleware, validation and tests as an HTTP route.
 
 ```go
-broker := &queue.Memory{} // or your Kafka / NATS / SQS client behind queue.Subscriber
+broker := &queue.Memory{} // in process; natsx.Broker for NATS, or your own queue.Subscriber
 consumer := &queue.Consumer{Service: "order", Source: broker, Logger: log}
 transport.RegisterOrderQueue(consumer, eps, mws) // generated from //kakarot:queue
 app.Servers = append(app.Servers, consumer)      // runs and stops with the app
 ```
 
 A handler error asks the broker to redeliver, except errors a retry cannot fix (`invalid`, `not_found`, `unauthorized`, `forbidden`) and payloads that do not decode: those go to `Consumer.DeadLetter`. A broker is one method, `Subscribe(ctx, topic, handler)`.
+
+**NATS JetStream** ships as `natsx`. One `Broker` is both sides: the consumer's source and the outbox relay's publisher.
+
+```go
+broker := &natsx.Broker{Conn: nc, Stream: "ORDERS", Subjects: []string{"order.>"}, Group: "billing"}
+consumer := &queue.Consumer{Service: "billing", Source: broker}
+relay := &outbox.Relay{DB: db, Publisher: outbox.ToQueue(broker)}
+```
+
+Instances that share a `Group` share the work; a failed handler gets the message again after `Backoff`, up to `MaxDeliver` times; an event's ID deduplicates a relay retry.
 
 ## Observability
 
@@ -257,6 +289,19 @@ r.Use(otelx.HTTP()) // continue the caller's trace (W3C traceparent)
 ```
 
 One span and one `kakarot.call.duration` histogram point per call, on every transport, named by operation with the result code as an attribute. Only server faults (`internal`, `unavailable`, `timeout`) mark a span as an error. Request and response values are never recorded. Install any OpenTelemetry SDK and exporter in `main`; without one the middleware is a no-op.
+
+A trace continues across every hop, not only HTTP:
+
+```go
+trace := grpcx.Carrier{Inject: otelx.Headers, Extract: otelx.WithHeaders}
+unary, stream := trace.Server() // trace.Client() gives the dialing side
+gs := grpc.NewServer(grpc.ChainUnaryInterceptor(unary), grpc.ChainStreamInterceptor(stream))
+
+msg.Headers = otelx.Headers(ctx)                                   // publisher
+consumer := &queue.Consumer{Source: broker, Extract: otelx.WithHeaders} // handler span is a child
+```
+
+The outbox does not store headers yet, so a trace stops at an event that goes through the relay.
 
 ## Auth
 
@@ -377,9 +422,13 @@ $ cd examples/wallet && KAKAROT_TEST_DSN=postgres://user:pass@localhost:5432/wal
 $ go run golang.org/x/vuln/cmd/govulncheck@latest ./...   # in any module
 ```
 
+## Documentation
+
+Guides live in [`docs/`](docs/index.md): a step by step [tutorial](docs/tutorial.md), [protobuf clients](docs/protobuf.md), [events with NATS](docs/events.md) and [releasing](docs/releasing.md). Changes are listed in [CHANGELOG.md](CHANGELOG.md).
+
 ## Not built yet
 
-- Broker adapters: `queue.Subscriber` is one method, but no Kafka, NATS or SQS implementation ships with kakarot.
-- A `.proto` file generated from the service interface, for protobuf clients in other languages.
-- gRPC trace propagation (use the `otelgrpc` stats handler on the gRPC server).
+- Brokers other than NATS: `queue.Subscriber` is one method, but no Kafka or SQS implementation ships with kakarot.
+- Trace headers on outbox events.
+- Protobuf `enum` and `oneof`: a named Go string is a protobuf `string`.
 - Dependency wiring generation: `main.go` is hand-written by design.

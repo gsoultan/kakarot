@@ -3,7 +3,7 @@ module github.com/gsoultan/kakarot/otelx
 go 1.27.4
 
 require (
-	github.com/gsoultan/kakarot v0.0.0
+	github.com/gsoultan/kakarot v0.1.0
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/metric v1.47.0
 	go.opentelemetry.io/otel/sdk v1.47.0

@@ -4,10 +4,10 @@ go 1.27.4
 
 require (
 	github.com/google/uuid v1.6.0
-	github.com/gsoultan/kakarot v0.0.0
-	github.com/gsoultan/kakarot/data v0.0.0
-	github.com/gsoultan/kakarot/otelx v0.0.0
-	github.com/gsoultan/kakarot/transport/grpcx v0.0.0
+	github.com/gsoultan/kakarot v0.1.0
+	github.com/gsoultan/kakarot/data v0.1.0
+	github.com/gsoultan/kakarot/otelx v0.1.0
+	github.com/gsoultan/kakarot/transport/grpcx v0.1.0
 	github.com/gsoultan/storm v1.12.1
 	google.golang.org/grpc v1.85.0
 )
@@ -16,7 +16,7 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
-	github.com/gsoultan/kakarot/cmd/kakarot v0.0.0 // indirect
+	github.com/gsoultan/kakarot/cmd/kakarot v0.1.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/pgx/v5 v5.13.0 // indirect

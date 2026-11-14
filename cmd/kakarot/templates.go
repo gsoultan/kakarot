@@ -122,15 +122,21 @@ import (
 // {{$s.Short}}GRPCService is the gRPC service name of {{$s.Name}}.
 const {{$s.Short}}GRPCService = {{printf "%q" $s.GRPCName}}
 
-// Register{{$s.Short}}GRPC serves every //kakarot:grpc method of {{$s.Name}}
-// on r, with the domain types as JSON messages (no .proto needed).
-// mws are shared endpoint middleware for the whole service.
-func Register{{$s.Short}}GRPC(r grpc.ServiceRegistrar, eps endpoint.{{$s.Short}}Endpoints, mws ...kakarot.Middleware) {
+// {{$s.Short}}GRPC builds the gRPC service of every //kakarot:grpc method of
+// {{$s.Name}}. Its Proto method writes a .proto file for clients in other
+// languages. mws are shared endpoint middleware for the whole service.
+func {{$s.Short}}GRPC(eps endpoint.{{$s.Short}}Endpoints, mws ...kakarot.Middleware) *grpcx.Service {
 	svc := grpcx.NewService({{$s.Short}}GRPCService, mws...)
 {{- range $s.Methods}}{{if .GRPC}}
 	grpcx.{{.GRPCAdd}}(svc, "{{.Name}}", eps.{{.Name}})
 {{- end}}{{end}}
-	svc.Register(r)
+	return svc
+}
+
+// Register{{$s.Short}}GRPC serves {{$s.Short}}GRPC on r, with the domain types as
+// JSON messages (no .proto needed).
+func Register{{$s.Short}}GRPC(r grpc.ServiceRegistrar, eps endpoint.{{$s.Short}}Endpoints, mws ...kakarot.Middleware) {
+	{{$s.Short}}GRPC(eps, mws...).Register(r)
 }
 
 // New{{$s.Short}}GRPCClient returns the same endpoints as the server, each
