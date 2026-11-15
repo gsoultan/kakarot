@@ -17,6 +17,7 @@ type OutboxEvent struct {
 	Topic       string
 	Key         string
 	Payload     storm.JSON
+	Headers     storm.JSON // a JSON object of string values, such as a trace context
 	Attempts    int32
 	LastError   string
 	PublishedAt *time.Time
@@ -25,6 +26,7 @@ type OutboxEvent struct {
 func (e *OutboxEvent) Schema(t *storm.Table) {
 	t.Col(&e.Topic).Size(255)
 	t.Col(&e.Key).Size(255)
+	t.Col(&e.Headers).Default("'{}'")
 	t.Col(&e.Attempts).Default("0")
 	t.Col(&e.LastError).Default("''")
 	t.Index(&e.PublishedAt, &e.CreatedAt)
