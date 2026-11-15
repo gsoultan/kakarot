@@ -47,6 +47,8 @@ A change that would break existing clients then shows up as a diff of the `.prot
 | `*T` | `optional T` (the client can tell "not sent" from zero) |
 | `[]T` | `repeated T` |
 | `map[K]V` | `map<K, V>` |
+| a string type with a `ProtoEnum` method | `enum` |
+| pointer fields tagged `oneof=<name>` | `oneof` |
 
 Further rules:
 
@@ -75,6 +77,51 @@ type Order struct {
 
 Removing a field shifts the fields after it unless they are pinned. Pin the numbers of any message that outside clients depend on.
 
-## Not supported yet
+## Enums
 
-Protobuf `enum` and `oneof`. A named Go string such as `domain.Status` is a `string` on the wire.
+A named string type is a protobuf `string` unless it lists its values:
+
+```go
+type Status string
+
+const (
+    StatusPending Status = "pending"
+    StatusPaid    Status = "paid"
+)
+
+func (Status) ProtoEnum() []Status { return []Status{StatusPending, StatusPaid} }
+```
+
+```proto
+enum Status {
+  STATUS_UNSPECIFIED = 0;
+  STATUS_PENDING = 1;
+  STATUS_PAID = 2;
+}
+```
+
+The empty string is number 0 and the listed values are 1, 2, ... in order, so add new values at the end of the list. A value that is not in the list is an error when encoding, and a number that is not in the list is rejected as an invalid request when decoding. HTTP and the Go client keep the string (`"paid"`); only protobuf clients see the number.
+
+## Oneof
+
+A group of pointer fields that share a name in their `proto` tag is a `oneof`: at most one of them is set.
+
+```go
+type Pay struct {
+    OrderID string  `json:"order_id"`
+    Card    *Card   `json:"card" proto:",oneof=method"`
+    Voucher *string `json:"voucher" proto:",oneof=method"`
+}
+```
+
+```proto
+message Pay {
+  string order_id = 1 [json_name = "order_id"];
+  oneof method {
+    Card card = 2;
+    string voucher = 3;
+  }
+}
+```
+
+The tag is `proto:"N,oneof=name"`, with the number optional. Setting two members is an error when encoding. Check in `Validate` that one is set if the operation needs it, so the rule also holds over HTTP.

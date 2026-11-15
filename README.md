@@ -34,6 +34,8 @@ The core has no dependencies outside the Go standard library. Anything that pull
 | `github.com/gsoultan/kakarot/data` | storm `TxManager`, error mapping, `outbox`, `idempotency` | storm |
 | `github.com/gsoultan/kakarot/otelx` | OpenTelemetry tracing and metrics | opentelemetry-go |
 | `github.com/gsoultan/kakarot/natsx` | NATS JetStream broker for queue consumers and the outbox relay | nats.go |
+| `github.com/gsoultan/kakarot/kafkax` | Kafka broker | franz-go |
+| `github.com/gsoultan/kakarot/sqsx` | Amazon SQS broker | aws-sdk-go-v2 |
 | `github.com/gsoultan/kakarot/cmd/kakarot` | CLI: `new`, `gen`, `check` | x/tools |
 | `examples/orders` | a complete service on every layer | all of the above |
 | `examples/checkout` | a synchronous request followed by asynchronous payment, shipping, compensation and expiry | core, `data` |
@@ -249,7 +251,7 @@ message Order {
 }
 ```
 
-One description of the Go types drives both the file and the wire format, so they cannot disagree. Field numbers follow the order of the struct's fields: add fields at the end, or pin a number with a `proto:"N"` tag. `examples/orders` keeps the file under a test that fails when it drifts. The full type mapping is in [docs/protobuf.md](docs/protobuf.md).
+One description of the Go types drives both the file and the wire format, so they cannot disagree. Field numbers follow the order of the struct's fields: add fields at the end, or pin a number with a `proto:"N"` tag. A string type with a `ProtoEnum` method is an `enum`, and pointer fields tagged `proto:",oneof=name"` are a `oneof`. `examples/orders` keeps the file under a test that fails when it drifts. The full type mapping is in [docs/protobuf.md](docs/protobuf.md).
 
 If you already have protoc output, use the **proto adapters** next to it:
 
@@ -263,7 +265,7 @@ s.getOrder = grpcx.Unary(op, eps.GetOrder, fromProto, toProto, mws...)
 A message handler is an ordinary endpoint, so it gets the same middleware, validation and tests as an HTTP route.
 
 ```go
-broker := &queue.Memory{} // in process; natsx.Broker for NATS, or your own queue.Subscriber
+broker := &queue.Memory{} // in process; natsx, kafkax or sqsx across services, or your own queue.Subscriber
 consumer := &queue.Consumer{Service: "order", Source: broker, Logger: log}
 transport.RegisterOrderQueue(consumer, eps, mws) // generated from //kakarot:queue
 app.Servers = append(app.Servers, consumer)      // runs and stops with the app
@@ -271,7 +273,7 @@ app.Servers = append(app.Servers, consumer)      // runs and stops with the app
 
 A handler error asks the broker to redeliver, except errors a retry cannot fix (`invalid`, `not_found`, `unauthorized`, `forbidden`) and payloads that do not decode: those go to `Consumer.DeadLetter`. A broker is one method, `Subscribe(ctx, topic, handler)`.
 
-**NATS JetStream** ships as `natsx`. One `Broker` is both sides: the consumer's source and the outbox relay's publisher.
+**Brokers** ship for NATS JetStream (`natsx`), Kafka (`kafkax`) and Amazon SQS (`sqsx`). One `Broker` is both sides: the consumer's source and the outbox relay's publisher.
 
 ```go
 broker := &natsx.Broker{Conn: nc, Stream: "ORDERS", Subjects: []string{"order.>"}, Group: "billing"}
@@ -280,6 +282,13 @@ relay := &outbox.Relay{DB: db, Publisher: outbox.ToQueue(broker)}
 ```
 
 Instances that share a `Group` share the work; a failed handler gets the message again after `Backoff`, up to `MaxDeliver` times; an event's ID deduplicates a relay retry.
+
+```go
+kafka := &kafkax.Broker{Brokers: []string{"localhost:9092"}, Group: "billing", DeadLetter: ".dead"}
+aws := &sqsx.Broker{Client: sqs.NewFromConfig(cfg), Queues: map[string]string{"order.placed": queueURL}}
+```
+
+[docs/events.md](docs/events.md) has the settings and the retry behaviour of each.
 
 ## Observability
 
@@ -301,7 +310,7 @@ msg.Headers = otelx.Headers(ctx)                                   // publisher
 consumer := &queue.Consumer{Source: broker, Extract: otelx.WithHeaders} // handler span is a child
 ```
 
-The outbox does not store headers yet, so a trace stops at an event that goes through the relay.
+Events that go through the outbox keep the trace too: add `outbox.Carry(otelx.Headers)` after `otelx.Middleware()` and each event stores the headers of the call that wrote it.
 
 ## Auth
 
@@ -428,7 +437,6 @@ Guides live in [`docs/`](docs/index.md): a step by step [tutorial](docs/tutorial
 
 ## Not built yet
 
-- Brokers other than NATS: `queue.Subscriber` is one method, but no Kafka or SQS implementation ships with kakarot.
-- Trace headers on outbox events.
-- Protobuf `enum` and `oneof`: a named Go string is a protobuf `string`.
+- Brokers other than NATS, Kafka and SQS (RabbitMQ, Google Pub/Sub): `queue.Subscriber` is one method.
+- `.proto` output from `kakarot gen`: the file comes from `Service.Proto()` at run time or in a test.
 - Dependency wiring generation: `main.go` is hand-written by design.
