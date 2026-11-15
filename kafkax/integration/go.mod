@@ -1,0 +1,20 @@
+module github.com/gsoultan/kakarot/kafkax/integration
+
+go 1.27.4
+
+require (
+	github.com/gsoultan/kakarot v0.1.0
+	github.com/gsoultan/kakarot/kafkax v0.1.0
+	github.com/twmb/franz-go v1.22.3
+	github.com/twmb/franz-go/pkg/kfake v0.0.0-20261109062748-d6ea02a174bc
+)
+
+require (
+	github.com/klauspost/compress v1.20.3 // indirect
+	github.com/pierrec/lz4/v4 v4.1.33 // indirect
+	github.com/twmb/franz-go/pkg/kmsg v1.15.1 // indirect
+)
+
+replace github.com/gsoultan/kakarot => ../..
+
+replace github.com/gsoultan/kakarot/kafkax => ..
