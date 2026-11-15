@@ -10,6 +10,7 @@ A layered Go framework: **transport → middleware → endpoint → service → 
 | [Protobuf clients](protobuf.md) | The `.proto` file written from a service, the type mapping, keeping field numbers stable |
 | [Events](events.md) | Outbox, queue consumers, NATS JetStream, tracing across services |
 | [Releasing](releasing.md) | Modules, versions and tags |
+| [v0.1.0 release notes](releases/v0.1.0.md) | What the first release contains, the upgrade note and known limits |
 
 The [README](https://github.com/gsoultan/kakarot#readme) is the reference for every package. Three complete services live in `examples/`: `orders` (every layer and transport), `wallet` (auth, idempotent money transfers) and `checkout` (a synchronous request followed by asynchronous payment, shipping and compensation).
 
