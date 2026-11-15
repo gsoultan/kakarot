@@ -119,6 +119,7 @@ func (s *Service) Descriptor() (*descriptorpb.FileDescriptorProto, error) {
 		Name:        proto.String(strings.ReplaceAll(s.name, ".", "/") + ".proto"),
 		Syntax:      proto.String("proto3"),
 		MessageType: b.messages,
+		EnumType:    b.enums,
 		Service:     []*descriptorpb.ServiceDescriptorProto{svc},
 	}
 	if pkg != "" {
@@ -137,6 +138,7 @@ type schema struct {
 	names    map[reflect.Type]string // struct type -> message name
 	taken    map[string]bool
 	messages []*descriptorpb.DescriptorProto
+	enums    []*descriptorpb.EnumDescriptorProto
 	imports  map[string]bool
 }
 
@@ -203,11 +205,52 @@ func (b *schema) message(s *shape, hint string) (string, error) {
 	}
 	msg := &descriptorpb.DescriptorProto{Name: proto.String(name)}
 	b.messages = append(b.messages, msg)
+	// Declared oneofs come before the ones optional fields imply.
+	for i := range s.fields {
+		if o := s.fields[i].oneof; o != "" && oneofIndex(msg, o) < 0 {
+			msg.OneofDecl = append(msg.OneofDecl, &descriptorpb.OneofDescriptorProto{Name: proto.String(o)})
+		}
+	}
 	for i := range s.fields {
 		if err := b.field(msg, &s.fields[i], name); err != nil {
 			return "", err
 		}
 	}
+	return b.qualify(name), nil
+}
+
+func oneofIndex(msg *descriptorpb.DescriptorProto, name string) int32 {
+	for i, o := range msg.OneofDecl {
+		if o.GetName() == name {
+			return int32(i)
+		}
+	}
+	return -1
+}
+
+// enum declares a string type's enum once and returns its name.
+func (b *schema) enum(s *shape) (string, error) {
+	if name, ok := b.names[s.rt]; ok {
+		return b.qualify(name), nil
+	}
+	name := messageName(s.rt, "")
+	if b.taken[name] {
+		return "", fmt.Errorf("two types would both be %s (one is %s): rename one", name, s.rt)
+	}
+	b.taken[name], b.names[s.rt] = true, name
+	prefix := strings.ToUpper(protoName(name))
+	e := &descriptorpb.EnumDescriptorProto{Name: proto.String(name)}
+	e.Value = append(e.Value, &descriptorpb.EnumValueDescriptorProto{Name: proto.String(prefix + "_UNSPECIFIED"), Number: proto.Int32(0)})
+	seen := map[string]bool{}
+	for i, v := range s.values {
+		value := prefix + "_" + strings.ToUpper(protoName(v))
+		if seen[value] || value == prefix+"_UNSPECIFIED" {
+			return "", fmt.Errorf("%s: two values would both be %s", s.rt, value)
+		}
+		seen[value] = true
+		e.Value = append(e.Value, &descriptorpb.EnumValueDescriptorProto{Name: proto.String(value), Number: proto.Int32(int32(i + 1))})
+	}
+	b.enums = append(b.enums, e)
 	return b.qualify(name), nil
 }
 
@@ -255,7 +298,9 @@ func (b *schema) field(msg *descriptorpb.DescriptorProto, f *field, owner string
 		}
 		// A pointer to a scalar is an optional field: the client can tell
 		// "not sent" from the zero value.
-		if !s.list && s.ptr && typ != descriptorpb.FieldDescriptorProto_TYPE_MESSAGE {
+		if f.oneof != "" {
+			fd.OneofIndex = proto.Int32(oneofIndex(msg, f.oneof))
+		} else if !s.list && s.ptr && typ != descriptorpb.FieldDescriptorProto_TYPE_MESSAGE {
 			fd.Proto3Optional = proto.Bool(true)
 			fd.OneofIndex = proto.Int32(int32(len(msg.OneofDecl)))
 			msg.OneofDecl = append(msg.OneofDecl, &descriptorpb.OneofDescriptorProto{Name: proto.String("_" + f.name)})
@@ -276,6 +321,9 @@ func (b *schema) fieldType(s *shape, hint string) (descriptorpb.FieldDescriptorP
 	case kDuration:
 		b.imports["google/protobuf/duration.proto"] = true
 		return descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, ".google.protobuf.Duration", nil
+	case kEnum:
+		name, err := b.enum(s)
+		return descriptorpb.FieldDescriptorProto_TYPE_ENUM, name, err
 	case kBytes:
 		return descriptorpb.FieldDescriptorProto_TYPE_BYTES, "", nil
 	case kBool:
@@ -374,7 +422,7 @@ func (s *Service) Proto() (string, error) {
 		for _, n := range msg.NestedType {
 			entries[local(msg.GetName()+"."+n.GetName())] = n
 		}
-		for _, f := range msg.Field {
+		line := func(indent string, f *descriptorpb.FieldDescriptorProto) {
 			typ := scalar(f)
 			switch entry := entries[typ]; {
 			case entry != nil:
@@ -388,7 +436,33 @@ func (s *Service) Proto() (string, error) {
 			if f.GetJsonName() != lowerCamel(f.GetName()) {
 				opts = fmt.Sprintf(" [json_name = %q]", f.GetJsonName())
 			}
-			fmt.Fprintf(&w, "  %s %s = %d%s;\n", typ, f.GetName(), f.GetNumber(), opts)
+			fmt.Fprintf(&w, "%s%s %s = %d%s;\n", indent, typ, f.GetName(), f.GetNumber(), opts)
+		}
+		printed := map[int32]bool{}
+		for _, f := range msg.Field {
+			if f.OneofIndex == nil || f.GetProto3Optional() {
+				line("  ", f)
+				continue
+			}
+			// A oneof is written once, where its first member stands.
+			if printed[f.GetOneofIndex()] {
+				continue
+			}
+			printed[f.GetOneofIndex()] = true
+			fmt.Fprintf(&w, "  oneof %s {\n", msg.OneofDecl[f.GetOneofIndex()].GetName())
+			for _, m := range msg.Field {
+				if m.OneofIndex != nil && !m.GetProto3Optional() && m.GetOneofIndex() == f.GetOneofIndex() {
+					line("    ", m)
+				}
+			}
+			w.WriteString("  }\n")
+		}
+		w.WriteString("}\n")
+	}
+	for _, e := range fd.EnumType {
+		fmt.Fprintf(&w, "\nenum %s {\n", e.GetName())
+		for _, v := range e.Value {
+			fmt.Fprintf(&w, "  %s = %d;\n", v.GetName(), v.GetNumber())
 		}
 		w.WriteString("}\n")
 	}
