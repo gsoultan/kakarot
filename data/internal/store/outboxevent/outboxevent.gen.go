@@ -27,6 +27,7 @@ type Row struct {
 	Topic       string
 	Key         string
 	Payload     runtime.JSON
+	Headers     runtime.JSON
 	Attempts    int32
 	LastError   string
 	PublishedAt runtime.Null[time.Time]
@@ -74,7 +75,7 @@ const (
 	opNotExists runtime.Op = 33
 )
 
-const nCols = 9
+const nCols = 10
 
 // Query is a value type: composing one allocates nothing. Predicates
 // are a postfix token stream, so disjunction and negation are
@@ -206,21 +207,21 @@ func (q *Query) cursor(col uint32, r Row) {
 		}
 		q.strs[q.ns] = r.Key
 		q.ns++
-	case 6:
+	case 7:
 		if int(q.nn) >= len(q.nums) {
 			q.over = true
 			return
 		}
 		q.nums[q.nn] = int64(r.Attempts)
 		q.nn++
-	case 7:
+	case 8:
 		if int(q.ns) >= len(q.strs) {
 			q.over = true
 			return
 		}
 		q.strs[q.ns] = r.LastError
 		q.ns++
-	case 8:
+	case 9:
 		if int(q.ntm) >= len(q.tims) {
 			q.over = true
 			return
@@ -387,9 +388,10 @@ var (
 	Topic       = TextCol{3}
 	Key         = TextCol{4}
 	Payload     = JSONCol{5}
-	Attempts    = Int32Col{6}
-	LastError   = TextCol{7}
-	PublishedAt = NullTimeCol{8}
+	Headers     = JSONCol{6}
+	Attempts    = Int32Col{7}
+	LastError   = TextCol{8}
+	PublishedAt = NullTimeCol{9}
 )
 
 // UUIDCol addresses a uuid column.
@@ -669,14 +671,14 @@ func (q *Query) leaf(p Pred) {
 			}
 			q.anyRaw[q.nar] = p.anyRaw
 			q.nar++
-		case 3, 4, 5, 7:
+		case 3, 4, 5, 6, 8:
 			if int(q.nas) >= 3 {
 				q.over = true
 				return
 			}
 			q.anyStr[q.nas] = p.anyStr
 			q.nas++
-		case 6:
+		case 7:
 			if int(q.nai32) >= 3 {
 				q.over = true
 				return
@@ -699,28 +701,28 @@ func (q *Query) leaf(p Pred) {
 		}
 		q.raws[q.nr] = p.raw
 		q.nr++
-	case 1, 2, 8:
+	case 1, 2, 9:
 		if int(q.ntm) >= 4 {
 			q.over = true
 			return
 		}
 		q.tims[q.ntm] = p.tim
 		q.ntm++
-	case 3, 4, 7:
+	case 3, 4, 8:
 		if int(q.ns) >= 6 {
 			q.over = true
 			return
 		}
 		q.strs[q.ns] = p.str
 		q.ns++
-	case 5:
+	case 5, 6:
 		if int(q.njs) >= 2 {
 			q.over = true
 			return
 		}
 		q.jsns[q.njs] = p.jsn
 		q.njs++
-	case 6:
+	case 7:
 		if int(q.nn) >= 6 {
 			q.over = true
 			return
@@ -782,6 +784,12 @@ func (q Query) PayloadHasAnyKey(v ...string) Query      { return q.Where(Payload
 func (q Query) PayloadHasAllKeys(v ...string) Query     { return q.Where(Payload.HasAllKeys(v...)) }
 func (q Query) PayloadTextLikeAny(v ...string) Query    { return q.Where(Payload.TextLikeAny(v...)) }
 func (q Query) PayloadIsEmpty() Query                   { return q.Where(Payload.IsEmpty()) }
+func (q Query) HeadersContains(v runtime.JSON) Query    { return q.Where(Headers.Contains(v)) }
+func (q Query) HeadersContainedBy(v runtime.JSON) Query { return q.Where(Headers.ContainedBy(v)) }
+func (q Query) HeadersHasAnyKey(v ...string) Query      { return q.Where(Headers.HasAnyKey(v...)) }
+func (q Query) HeadersHasAllKeys(v ...string) Query     { return q.Where(Headers.HasAllKeys(v...)) }
+func (q Query) HeadersTextLikeAny(v ...string) Query    { return q.Where(Headers.TextLikeAny(v...)) }
+func (q Query) HeadersIsEmpty() Query                   { return q.Where(Headers.IsEmpty()) }
 func (q Query) AttemptsEq(v int32) Query                { return q.Where(Attempts.Eq(v)) }
 func (q Query) AttemptsNotEq(v int32) Query             { return q.Where(Attempts.NotEq(v)) }
 func (q Query) AttemptsGt(v int32) Query                { return q.Where(Attempts.Gt(v)) }
@@ -813,7 +821,7 @@ func (q Query) PublishedAtLte(v time.Time) Query        { return q.Where(Publish
 func (q Query) PublishedAtIsNull() Query                { return q.Where(PublishedAt.IsNull()) }
 func (q Query) PublishedAtIsNotNull() Query             { return q.Where(PublishedAt.IsNotNull()) }
 
-const selectPrefix = `SELECT "id", "created_at", "updated_at", "topic", "key", "payload", "attempts", "last_error", "published_at" FROM "outbox_events"`
+const selectPrefix = `SELECT "id", "created_at", "updated_at", "topic", "key", "payload", "headers", "attempts", "last_error", "published_at" FROM "outbox_events"`
 const countPrefix = `SELECT count(*) FROM "outbox_events"`
 const existsPrefix = `SELECT 1 FROM "outbox_events"`
 const existsSuffix = ` LIMIT 1`
@@ -854,6 +862,7 @@ var orderTable = [nCols][4]string{
 	{"\"topic\"", "\"topic\" DESC", "\"topic\" ASC NULLS FIRST", "\"topic\" DESC NULLS LAST"},
 	{"\"key\"", "\"key\" DESC", "\"key\" ASC NULLS FIRST", "\"key\" DESC NULLS LAST"},
 	{"\"payload\"", "\"payload\" DESC", "\"payload\" ASC NULLS FIRST", "\"payload\" DESC NULLS LAST"},
+	{"\"headers\"", "\"headers\" DESC", "\"headers\" ASC NULLS FIRST", "\"headers\" DESC NULLS LAST"},
 	{"\"attempts\"", "\"attempts\" DESC", "\"attempts\" ASC NULLS FIRST", "\"attempts\" DESC NULLS LAST"},
 	{"\"last_error\"", "\"last_error\" DESC", "\"last_error\" ASC NULLS FIRST", "\"last_error\" DESC NULLS LAST"},
 	{"\"published_at\"", "\"published_at\" DESC", "\"published_at\" ASC NULLS FIRST", "\"published_at\" DESC NULLS LAST"},
@@ -868,6 +877,7 @@ var identTable = [nCols]string{
 	"\"topic\"",
 	"\"key\"",
 	"\"payload\"",
+	"\"headers\"",
 	"\"attempts\"",
 	"\"last_error\"",
 	"\"published_at\"",
@@ -903,7 +913,7 @@ func orderOf(dir, col uint32) string {
 
 // fragTable is every predicate this table can produce, lowered at build
 // time. Runtime splices; it never formats.
-var fragTable = [9][34]runtime.Frag{
+var fragTable = [10][34]runtime.Frag{
 	{ // id
 		opEq:    {A: "\"id\" = $"},
 		opNotEq: {A: "\"id\" <> $"},
@@ -965,6 +975,14 @@ var fragTable = [9][34]runtime.Frag{
 		opHasAllKeys:      {A: "\"payload\" ?& $"},
 		opJSONTextLikeAny: {A: "COALESCE(\"payload\"::text, '') LIKE ANY($", B: ")"},
 		opJSONIsEmpty:     {A: "COALESCE(\"payload\"::text, '') IN ('', 'null', '[]', '{}')"},
+	},
+	{ // headers
+		opJSONContains:    {A: "\"headers\" @> $"},
+		opJSONContainedBy: {A: "\"headers\" <@ $"},
+		opHasAnyKey:       {A: "\"headers\" ?| $"},
+		opHasAllKeys:      {A: "\"headers\" ?& $"},
+		opJSONTextLikeAny: {A: "COALESCE(\"headers\"::text, '') LIKE ANY($", B: ")"},
+		opJSONIsEmpty:     {A: "COALESCE(\"headers\"::text, '') IN ('', 'null', '[]', '{}')"},
 	},
 	{ // attempts
 		opEq:    {A: "\"attempts\" = $"},
@@ -1084,7 +1102,7 @@ func (q Query) existsStmt(toks []runtime.Tok) *runtime.Stmt { return existsStmtF
 const (
 	distinctOpen = "SELECT DISTINCT ON ("
 	distinctSep  = ", "
-	distinctTail = ") \"id\", \"created_at\", \"updated_at\", \"topic\", \"key\", \"payload\", \"attempts\", \"last_error\", \"published_at\" FROM \"outbox_events\""
+	distinctTail = ") \"id\", \"created_at\", \"updated_at\", \"topic\", \"key\", \"payload\", \"headers\", \"attempts\", \"last_error\", \"published_at\" FROM \"outbox_events\""
 )
 
 // distinctCaches are AllDistinctOn's, without and with an offset. The
@@ -1253,15 +1271,16 @@ func scan(rv [][]byte, r *Row, sl *runtime.Slab) error {
 	r.Topic = sl.Str(rv[3])
 	r.Key = sl.Str(rv[4])
 	r.Payload = runtime.JSON(runtime.JSONB(rv[5], sl))
-	if len(rv[6]) != 4 {
-		return runtime.ShapeErr("attempts", "int4", 4, rv[6])
+	r.Headers = runtime.JSON(runtime.JSONB(rv[6], sl))
+	if len(rv[7]) != 4 {
+		return runtime.ShapeErr("attempts", "int4", 4, rv[7])
 	}
-	r.Attempts = runtime.Int4(rv[6])
-	r.LastError = sl.Str(rv[7])
-	if b := rv[8]; b != nil && len(b) != 8 {
+	r.Attempts = runtime.Int4(rv[7])
+	r.LastError = sl.Str(rv[8])
+	if b := rv[9]; b != nil && len(b) != 8 {
 		return runtime.ShapeErr("published_at", "timestamptz", 8, b)
 	}
-	r.PublishedAt = runtime.Nullable(rv[8], runtime.Timestamptz)
+	r.PublishedAt = runtime.Nullable(rv[9], runtime.Timestamptz)
 	return nil
 }
 
@@ -1329,11 +1348,11 @@ func (q Query) bindPreds(b *binder) []any {
 				b.anyRaw[nar] = q.anyRaw[nar]
 				v = append(v, &b.anyRaw[nar])
 				nar++
-			case 3, 4, 5, 7:
+			case 3, 4, 5, 6, 8:
 				b.anyStr[nas] = q.anyStr[nas]
 				v = append(v, &b.anyStr[nas])
 				nas++
-			case 6:
+			case 7:
 				b.anyI32[nai32] = q.anyI32[nai32]
 				v = append(v, &b.anyI32[nai32])
 				nai32++
@@ -1345,19 +1364,19 @@ func (q Query) bindPreds(b *binder) []any {
 			b.raws[nr] = q.raws[nr]
 			v = append(v, &b.raws[nr])
 			nr++
-		case 1, 2, 8:
+		case 1, 2, 9:
 			b.tims[ntm] = q.tims[ntm]
 			v = append(v, &b.tims[ntm])
 			ntm++
-		case 3, 4, 7:
+		case 3, 4, 8:
 			b.strs[ns] = q.strs[ns]
 			v = append(v, &b.strs[ns])
 			ns++
-		case 5:
+		case 5, 6:
 			b.jsns[njs] = q.jsns[njs]
 			v = append(v, &b.jsns[njs])
 			njs++
-		case 6:
+		case 7:
 			b.nums[nn] = q.nums[nn]
 			v = append(v, &b.nums[nn])
 			nn++
@@ -1550,7 +1569,7 @@ func (q Query) Prepare(b *Binder) (string, []any) {
 
 // insertSQL does not vary: the column list is fixed by the table, so
 // the placeholders are known at build time and nothing is spliced.
-const insertSQL = `INSERT INTO "outbox_events" ("id", "created_at", "updated_at", "topic", "key", "payload", "attempts", "last_error", "published_at") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING "id", "created_at", "updated_at", "topic", "key", "payload", "attempts", "last_error", "published_at"`
+const insertSQL = `INSERT INTO "outbox_events" ("id", "created_at", "updated_at", "topic", "key", "payload", "headers", "attempts", "last_error", "published_at") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING "id", "created_at", "updated_at", "topic", "key", "payload", "headers", "attempts", "last_error", "published_at"`
 
 const updatePrefix = `UPDATE "outbox_events" SET `
 const deletePrefix = `DELETE FROM "outbox_events"`
@@ -1562,12 +1581,13 @@ const (
 	dTopic       uint64 = 1 << 1
 	dKey         uint64 = 1 << 2
 	dPayload     uint64 = 1 << 3
-	dAttempts    uint64 = 1 << 4
-	dLastError   uint64 = 1 << 5
-	dPublishedAt uint64 = 1 << 6
+	dHeaders     uint64 = 1 << 4
+	dAttempts    uint64 = 1 << 5
+	dLastError   uint64 = 1 << 6
+	dPublishedAt uint64 = 1 << 7
 )
 
-const nUpdatable = 7
+const nUpdatable = 8
 
 // setFrags is every assignment this table can make, lowered at build time.
 var setFrags = [nUpdatable]runtime.Frag{
@@ -1575,6 +1595,7 @@ var setFrags = [nUpdatable]runtime.Frag{
 	{A: "\"topic\" = $", B: ""},        // topic
 	{A: "\"key\" = $", B: ""},          // key
 	{A: "\"payload\" = $", B: ""},      // payload
+	{A: "\"headers\" = $", B: ""},      // headers
 	{A: "\"attempts\" = $", B: ""},     // attempts
 	{A: "\"last_error\" = $", B: ""},   // last_error
 	{A: "\"published_at\" = $", B: ""}, // published_at
@@ -1588,6 +1609,7 @@ var exprFrags = [nUpdatable]runtime.Frag{
 	{},                                   // topic has no server-side form
 	{},                                   // key has no server-side form
 	{},                                   // payload has no server-side form
+	{},                                   // headers has no server-side form
 	{A: "\"attempts\" = \"attempts\" + 1", B: ""}, // attempts = its own value plus one
 	{},                                     // last_error has no server-side form
 	{A: "\"published_at\" = now()", B: ""}, // published_at = the database's clock
@@ -1603,6 +1625,7 @@ var addFrags = [nUpdatable]runtime.Frag{
 	{}, // topic cannot be added to
 	{}, // key cannot be added to
 	{}, // payload cannot be added to
+	{}, // headers cannot be added to
 	{A: "\"attempts\" = \"attempts\" + $", B: ""}, // attempts = its own value plus an amount
 	{}, // last_error cannot be added to
 	{}, // published_at cannot be added to
@@ -1623,12 +1646,13 @@ const (
 	iTopic       uint64 = 1 << 3
 	iKey         uint64 = 1 << 4
 	iPayload     uint64 = 1 << 5
-	iAttempts    uint64 = 1 << 6
-	iLastError   uint64 = 1 << 7
-	iPublishedAt uint64 = 1 << 8
+	iHeaders     uint64 = 1 << 6
+	iAttempts    uint64 = 1 << 7
+	iLastError   uint64 = 1 << 8
+	iPublishedAt uint64 = 1 << 9
 )
 
-const nInsertable = 9
+const nInsertable = 10
 
 // insCols is the quoted column name for each insert bit.
 var insCols = [nInsertable]string{
@@ -1638,6 +1662,7 @@ var insCols = [nInsertable]string{
 	"\"topic\"",
 	"\"key\"",
 	"\"payload\"",
+	"\"headers\"",
 	"\"attempts\"",
 	"\"last_error\"",
 	"\"published_at\"",
@@ -1649,7 +1674,7 @@ var insParts = runtime.InsertParts{Open: " (", Sep: ", ", Mid: ") VALUES (", Clo
 var insPlaceholder = runtime.Placeholder{}
 
 const insPrefix = "INSERT INTO \"outbox_events\""
-const insReturning = " RETURNING \"id\", \"created_at\", \"updated_at\", \"topic\", \"key\", \"payload\", \"attempts\", \"last_error\", \"published_at\""
+const insReturning = " RETURNING \"id\", \"created_at\", \"updated_at\", \"topic\", \"key\", \"payload\", \"headers\", \"attempts\", \"last_error\", \"published_at\""
 
 var insCache = runtime.NewMaskCache()
 
@@ -1668,7 +1693,7 @@ var updOpCache = runtime.NewMaskCache()
 // part of it. Without it m.Row() would hold what the row held BEFORE
 // the statement, so a caller reading back the counter it just
 // incremented would get the old number and never know.
-const updReturning = " RETURNING \"id\", \"created_at\", \"updated_at\", \"topic\", \"key\", \"payload\", \"attempts\", \"last_error\", \"published_at\""
+const updReturning = " RETURNING \"id\", \"created_at\", \"updated_at\", \"topic\", \"key\", \"payload\", \"headers\", \"attempts\", \"last_error\", \"published_at\""
 
 // Masks reports how many distinct UPDATE shapes have compiled.
 func Masks() int { return updCache.Masks() }
@@ -1744,6 +1769,12 @@ func (m *Mut) SetPayload(v runtime.JSON) {
 	m.row.Payload = v
 	m.dirty |= dPayload
 	m.expr &^= dPayload
+}
+
+func (m *Mut) SetHeaders(v runtime.JSON) {
+	m.row.Headers = v
+	m.dirty |= dHeaders
+	m.expr &^= dHeaders
 }
 
 func (m *Mut) SetAttempts(v int32) {
@@ -1839,10 +1870,12 @@ func (n *Ins) insertArgs(args []any) []any {
 		case 5:
 			args = append(args, n.row.Payload.OrNull())
 		case 6:
-			args = append(args, n.row.Attempts)
+			args = append(args, n.row.Headers.OrNull())
 		case 7:
-			args = append(args, n.row.LastError)
+			args = append(args, n.row.Attempts)
 		case 8:
+			args = append(args, n.row.LastError)
+		case 9:
 			args = append(args, n.row.PublishedAt.Arg())
 		}
 	}
@@ -1877,6 +1910,11 @@ func (n *Ins) SetKey(v string) {
 func (n *Ins) SetPayload(v runtime.JSON) {
 	n.row.Payload = v
 	n.set |= iPayload
+}
+
+func (n *Ins) SetHeaders(v runtime.JSON) {
+	n.row.Headers = v
+	n.set |= iHeaders
 }
 
 func (n *Ins) SetAttempts(v int32) {
@@ -1946,7 +1984,7 @@ var conflictSpecs = []string{
 
 // assignable is the columns target i may overwrite, given the mask.
 func assignable(i uint8, mask uint64) []string {
-	set := make([]string, 0, 7)
+	set := make([]string, 0, 8)
 	for j, bit := range assignBits[i] {
 		if mask&(1<<bit) != 0 {
 			set = append(set, assignNames[i][j])
@@ -1959,11 +1997,11 @@ func assignable(i uint8, mask uint64) []string {
 // of each column it may overwrite. An empty row is a target whose key
 // covers every updatable column.
 var assignBits = [1][]uint8{
-	{2, 3, 4, 5, 6, 7, 8},
+	{2, 3, 4, 5, 6, 7, 8, 9},
 }
 
 var assignNames = [1][]string{
-	{"updated_at", "topic", "key", "payload", "attempts", "last_error", "published_at"},
+	{"updated_at", "topic", "key", "payload", "headers", "attempts", "last_error", "published_at"},
 }
 
 // OnConflictID upserts on the unique index over (id).
@@ -2019,6 +2057,7 @@ var assignFor = map[string]string{
 	"topic":        "\"topic\" = EXCLUDED.\"topic\"",
 	"key":          "\"key\" = EXCLUDED.\"key\"",
 	"payload":      "\"payload\" = EXCLUDED.\"payload\"",
+	"headers":      "\"headers\" = EXCLUDED.\"headers\"",
 	"attempts":     "\"attempts\" = EXCLUDED.\"attempts\"",
 	"last_error":   "\"last_error\" = EXCLUDED.\"last_error\"",
 	"published_at": "\"published_at\" = EXCLUDED.\"published_at\"",
@@ -2097,13 +2136,14 @@ func Inserts() int { return insCache.Masks() }
 // Insert writes every insertable column, zero values included, and reads
 // the row back so database defaults land in r.
 func Insert(ctx context.Context, ex runtime.Executor, r *Row) error {
-	args := make([]any, 0, 9)
+	args := make([]any, 0, 10)
 	args = append(args, r.ID)
 	args = append(args, r.CreatedAt)
 	args = append(args, r.UpdatedAt)
 	args = append(args, r.Topic)
 	args = append(args, r.Key)
 	args = append(args, r.Payload.OrNull())
+	args = append(args, r.Headers.OrNull())
 	args = append(args, r.Attempts)
 	args = append(args, r.LastError)
 	args = append(args, r.PublishedAt.Arg())
@@ -2139,6 +2179,7 @@ var copyCols = []string{
 	"topic",
 	"key",
 	"payload",
+	"headers",
 	"attempts",
 	"last_error",
 	"published_at",
@@ -2148,7 +2189,7 @@ var copyCols = []string{
 type rowSource struct {
 	rows []Row
 	i    int
-	buf  [9]any
+	buf  [10]any
 }
 
 func (s *rowSource) Next() bool {
@@ -2166,9 +2207,10 @@ func (s *rowSource) Values() []any {
 	s.buf[3] = &r.Topic
 	s.buf[4] = &r.Key
 	s.buf[5] = &r.Payload
-	s.buf[6] = &r.Attempts
-	s.buf[7] = &r.LastError
-	s.buf[8] = r.PublishedAt.Ptr()
+	s.buf[6] = &r.Headers
+	s.buf[7] = &r.Attempts
+	s.buf[8] = &r.LastError
+	s.buf[9] = r.PublishedAt.Ptr()
 	return s.buf[:]
 }
 
@@ -2189,13 +2231,14 @@ func InsertAll(ctx context.Context, ex runtime.Executor, rows []Row) (int64, err
 func InsertOp(r Row) runtime.BatchOp {
 	const mask = 1<<nInsertable - 1 // every insertable column
 	st := stmtForInsertNoReturn(mask, 0, 0)
-	args := make([]any, 0, 9)
+	args := make([]any, 0, 10)
 	args = append(args, r.ID)
 	args = append(args, r.CreatedAt)
 	args = append(args, r.UpdatedAt)
 	args = append(args, r.Topic)
 	args = append(args, r.Key)
 	args = append(args, r.Payload.OrNull())
+	args = append(args, r.Headers.OrNull())
 	args = append(args, r.Attempts)
 	args = append(args, r.LastError)
 	args = append(args, r.PublishedAt.Arg())
@@ -2423,10 +2466,12 @@ func (m Mut) updateArgs(args []any) []any {
 		case 3:
 			args = append(args, m.row.Payload.OrNull())
 		case 4:
-			args = append(args, m.row.Attempts)
+			args = append(args, m.row.Headers.OrNull())
 		case 5:
-			args = append(args, m.row.LastError)
+			args = append(args, m.row.Attempts)
 		case 6:
+			args = append(args, m.row.LastError)
+		case 7:
 			args = append(args, m.row.PublishedAt.Arg())
 		}
 	}

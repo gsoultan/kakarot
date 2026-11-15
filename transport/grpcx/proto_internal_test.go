@@ -219,3 +219,80 @@ func TestProtoNames(t *testing.T) {
 		}
 	}
 }
+
+type color string
+
+func (color) ProtoEnum() []color { return []color{"red", "dark-blue"} }
+
+type card struct {
+	Last4 string `json:"last4"`
+}
+
+type payment struct {
+	Color  color            `json:"color"`
+	Colors []color          `json:"colors"`
+	Maybe  *color           `json:"maybe"`
+	ByName map[string]color `json:"by_name"`
+	Card   *card            `json:"card" proto:",oneof=method"`
+	IBAN   *string          `json:"iban" proto:",oneof=method"`
+	Note   string           `json:"note"`
+}
+
+func TestProtobufEnumAndOneof(t *testing.T) {
+	blue := color("dark-blue")
+	in := payment{Color: "red", Colors: []color{"dark-blue", "", "red"}, Maybe: &blue,
+		ByName: map[string]color{"a": "red"}, Card: &card{Last4: "4242"}, Note: "n"}
+	b, err := marshalProto(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out payment
+	if err := unmarshalProto(b, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(out, in) {
+		t.Fatalf("got %+v\nwant %+v", out, in)
+	}
+	// An enum is a number on the wire: red is 1.
+	if b, _ := marshalProto(struct{ C color }{"red"}); !reflect.DeepEqual(b, []byte{0x08, 0x01}) {
+		t.Fatalf("wire: %x", b)
+	}
+
+	if _, err := marshalProto(payment{Color: "green"}); err == nil {
+		t.Error("want an error for a value the enum does not list")
+	}
+	if _, err := marshalProto(payment{Colors: []color{"green"}}); err == nil {
+		t.Error("want an error for a listed value the enum does not have")
+	}
+	if err := unmarshalProto([]byte{0x08, 0x09}, &out); err == nil {
+		t.Error("want an error for an enum number out of range")
+	}
+	iban := "DE00"
+	if _, err := marshalProto(payment{Card: &card{}, IBAN: &iban}); err == nil {
+		t.Error("want an error when two members of a oneof are set")
+	}
+
+	// On the wire the last member wins.
+	one, _ := marshalProto(payment{Card: &card{Last4: "1"}})
+	two, _ := marshalProto(payment{IBAN: &iban})
+	var last payment
+	if err := unmarshalProto(append(one, two...), &last); err != nil {
+		t.Fatal(err)
+	}
+	if last.Card != nil || last.IBAN == nil || *last.IBAN != "DE00" {
+		t.Fatalf("got %+v", last)
+	}
+
+	for name, v := range map[string]any{
+		"oneof on a value": struct {
+			A string `proto:",oneof=x"`
+		}{},
+		"unknown option": struct {
+			A *string `proto:"1,packed"`
+		}{},
+	} {
+		if _, err := marshalProto(v); err == nil {
+			t.Errorf("%s: want an error", name)
+		}
+	}
+}

@@ -10,9 +10,11 @@ The repository holds several Go modules, so that a project downloads only the li
 | `github.com/gsoultan/kakarot/transport/wsx` | `transport/wsx/v0.1.0` |
 | `github.com/gsoultan/kakarot/otelx` | `otelx/v0.1.0` |
 | `github.com/gsoultan/kakarot/natsx` | `natsx/v0.1.0` |
+| `github.com/gsoultan/kakarot/kafkax` | `kafkax/v0.1.0` |
+| `github.com/gsoultan/kakarot/sqsx` | `sqsx/v0.1.0` |
 | `github.com/gsoultan/kakarot/cmd/kakarot` | `cmd/kakarot/v0.1.0` |
 
-The examples are not released.
+The examples and the `integration` test modules are not released.
 
 ## Steps
 
@@ -23,7 +25,7 @@ The examples are not released.
 
 ```console
 $ git checkout main && git pull
-$ for m in "" data/ transport/grpcx/ transport/wsx/ otelx/ natsx/ cmd/kakarot/; do git tag "${m}v0.1.0"; done
+$ for m in "" data/ transport/grpcx/ transport/wsx/ otelx/ natsx/ kafkax/ sqsx/ cmd/kakarot/; do git tag "${m}v0.1.0"; done
 $ git push origin --tags
 ```
 

@@ -17,11 +17,11 @@ The first release.
 
 ### Modules
 
-- `transport/grpcx`: interface-first gRPC services and typed clients, bearer auth, custom status codes, `Carrier` for trace and context propagation, a `.proto` file written from the service (`Service.Proto`) and protobuf clients (`EnableProtobuf`).
+- `transport/grpcx`: interface-first gRPC services and typed clients, bearer auth, custom status codes, `Carrier` for trace and context propagation, a `.proto` file written from the service (`Service.Proto`) and protobuf clients (`EnableProtobuf`), with enums and oneofs.
 - `transport/wsx`: WebSocket streams.
-- `data`: storm `TxManager`, error mapping, transactional `outbox` with a relay, `idempotency` store.
+- `data`: storm `TxManager`, error mapping, transactional `outbox` with a relay that keeps trace headers (`outbox.Carry`), `idempotency` store.
 - `otelx`: one span and one duration metric per call on every transport; trace headers for gRPC and queues.
-- `natsx`: NATS JetStream broker for queue consumers and the outbox relay.
+- `natsx`, `kafkax`, `sqsx`: NATS JetStream, Kafka and Amazon SQS brokers for queue consumers and the outbox relay.
 - `cmd/kakarot`: `new` scaffolds a project, `gen` writes the endpoint and transport layers from a service interface, `check` verifies layer rules, `//kakarot:` comments and generated code.
 
 ### Examples

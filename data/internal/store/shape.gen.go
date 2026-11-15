@@ -31,6 +31,7 @@ func _assertOutboxEventShape(m m1.OutboxEvent) {
 		m.Topic,
 		m.Key,
 		m.Payload,
+		m.Headers,
 		m.Attempts,
 		m.LastError,
 		m.PublishedAt,

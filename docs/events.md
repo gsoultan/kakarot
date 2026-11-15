@@ -9,7 +9,7 @@ usecase ── Tx ──> order row + outbox row        one database transaction
                          │
                    outbox.Relay                 publishes committed events, at least once
                          │
-                      broker                    queue.Memory in one process, natsx.Broker across services
+                      broker                    queue.Memory in one process; natsx, kafkax or sqsx across services
                          │
                   queue.Consumer ──> endpoint   //kakarot:queue order.placed
 ```
@@ -59,6 +59,8 @@ sub := &natsx.Broker{Conn: nc, Stream: "ORDERS", Group: "billing"}
 consumer := &queue.Consumer{Service: "billing", Source: sub}
 ```
 
+`natsx.Broker` settings:
+
 | Setting | Meaning | Default |
 |---|---|---|
 | `Stream` | the JetStream stream | required |
@@ -69,6 +71,45 @@ consumer := &queue.Consumer{Service: "billing", Source: sub}
 | `Backoff` | pause before a failed message is delivered again | 1s |
 
 A topic is a NATS subject. An event's ID is the JetStream message ID, so a relay that publishes the same event twice delivers it once.
+
+## With Kafka
+
+```go
+broker := &kafkax.Broker{Brokers: []string{"localhost:9092"}, Group: "billing", DeadLetter: ".dead"}
+defer broker.Close()
+
+consumer := &queue.Consumer{Service: "billing", Source: broker}
+relay := &outbox.Relay{DB: db, Publisher: outbox.ToQueue(broker)}
+```
+
+| Setting | Meaning | Default |
+|---|---|---|
+| `Brokers` | seed brokers, `host:port` | required |
+| `Group` | the consumer group. Instances with the same group share the work; different groups each get every message | required to subscribe |
+| `Options` | extra franz-go client options: TLS, SASL, a client ID | none |
+| `MaxDeliver` | how often one message is handed to a handler | 10 |
+| `Backoff` | pause between those tries | 1s |
+| `DeadLetter` | suffix of the topic that takes a message after `MaxDeliver` failures | none: the message is logged and skipped |
+
+A message's key is the record key, so messages with one key stay in order. An offset is committed only after its handler returned. Kafka cannot redeliver a single record, so a failed message is tried again in place, and its partition waits until it succeeds or reaches `MaxDeliver`. A new group starts at the oldest message.
+
+## With Amazon SQS
+
+```go
+cfg, err := config.LoadDefaultConfig(ctx)
+broker := &sqsx.Broker{Client: sqs.NewFromConfig(cfg), Queues: map[string]string{
+    "order.placed": "https://sqs.eu-west-1.amazonaws.com/123456789012/billing-order-placed",
+}}
+```
+
+| Setting | Meaning | Default |
+|---|---|---|
+| `Client` | an `*sqs.Client` | required |
+| `Queues` | topic to queue URL | required |
+| `Backoff` | how long a failed message stays hidden before SQS delivers it again | 5s |
+| `Wait` | long-poll time of one receive call, at most 20s | 20s |
+
+A queue hands each message to one consumer. Give every service that handles a topic its own queue and fan out to them with an SNS topic. A message that keeps failing moves to the dead-letter queue of the queue's redrive policy. On a FIFO queue the key is the message group and the event's ID deduplicates a repeated publish. Headers travel as message attributes; SQS allows ten per message and the broker uses up to two.
 
 ## Failures
 
@@ -87,7 +128,15 @@ msg.Headers = otelx.Headers(ctx)
 consumer := &queue.Consumer{Source: broker, Extract: otelx.WithHeaders}
 ```
 
-The handler's span is then a child of the publisher's span. The outbox does not store headers yet, so a trace stops at an event that goes through the relay.
+The handler's span is then a child of the publisher's span.
+
+Events written through the outbox keep the trace as well. `outbox.Carry` stores the headers of the call with each event, and the relay hands them to the broker:
+
+```go
+mws := kakarot.Chain(otelx.Middleware(), outbox.Carry(otelx.Headers), middleware.Default(log, 5*time.Second))
+```
+
+The `outbox_events` table has a `headers` column for this. Run your migration after upgrading.
 
 ## Other brokers
 
@@ -98,4 +147,4 @@ Subscribe(ctx context.Context, topic string, h queue.Handler) error // queue.Sub
 Publish(ctx context.Context, m queue.Message) error                 // outbox.QueuePublisher
 ```
 
-`natsx/natsx.go` is about 170 lines and is a template for Kafka or SQS. Its tests in `natsx/integration` run against a NATS server started inside the test.
+`natsx/natsx.go` is about 170 lines and is a template for another broker. The NATS and Kafka tests run against a server started inside the test (`natsx/integration`, `kafkax/integration`).

@@ -12,6 +12,7 @@ import (
 	"github.com/gsoultan/kakarot"
 	"github.com/gsoultan/kakarot/data/idempotency"
 	"github.com/gsoultan/kakarot/data/idempotency/model"
+	outboxmodel "github.com/gsoultan/kakarot/data/outbox/model"
 	"github.com/gsoultan/kakarot/middleware"
 	"github.com/gsoultan/storm"
 	"github.com/gsoultan/storm/migrate"
@@ -42,7 +43,7 @@ func setup(t *testing.T) storm.DB {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	s, err := storm.Build(&model.IdempotencyRecord{})
+	s, err := storm.Build(&model.IdempotencyRecord{}, &outboxmodel.OutboxEvent{}) // every table of the test database
 	if err != nil {
 		t.Fatal(err)
 	}

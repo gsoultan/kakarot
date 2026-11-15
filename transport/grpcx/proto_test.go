@@ -43,6 +43,25 @@ type shopPage[T any] struct {
 	Next  string `json:"next"`
 }
 
+type payState string
+
+func (payState) ProtoEnum() []payState { return []payState{"pending", "paid"} }
+
+type payCard struct {
+	Last4 string `json:"last4"`
+}
+
+type payRequest struct {
+	OrderID string   `json:"order_id"`
+	Card    *payCard `json:"card" proto:",oneof=method"`
+	Voucher *string  `json:"voucher" proto:",oneof=method"`
+}
+
+type payResult struct {
+	State payState `json:"state"`
+	Via   string   `json:"via"`
+}
+
 type findOrder struct {
 	ID string `json:"id"`
 }
@@ -61,6 +80,15 @@ func shopService() *grpcx.Service {
 		return shopPage[shopOrder]{Items: []shopOrder{{ID: "o-1"}}, Next: "n"}, nil
 	})
 	grpcx.AddUnary(svc, "Count", func(context.Context, struct{}) (int, error) { return 3, nil })
+	grpcx.AddUnary(svc, "Pay", func(_ context.Context, in payRequest) (payResult, error) {
+		switch {
+		case in.Card != nil:
+			return payResult{State: "paid", Via: "card " + in.Card.Last4}, nil
+		case in.Voucher != nil:
+			return payResult{State: "pending", Via: "voucher " + *in.Voucher}, nil
+		}
+		return payResult{}, kakarot.E(kakarot.CodeInvalid, "a payment method is required", nil)
+	})
 	grpcx.AddServerStream(svc, "Watch", func(_ context.Context, in findOrder) iter.Seq2[shopOrder, error] {
 		return kakarot.SliceStream([]shopOrder{{ID: in.ID}, {ID: in.ID + "-2"}})
 	})
@@ -93,6 +121,7 @@ service Orders {
   rpc Get(FindOrder) returns (ShopOrder);
   rpc List(ListRequest) returns (ShopPageShopOrder);
   rpc Count(CountRequest) returns (CountResponse);
+  rpc Pay(PayRequest) returns (PayResult);
   rpc Watch(FindOrder) returns (stream ShopOrder);
   rpc Echo(stream ShopLine) returns (stream ShopLine);
 }
@@ -111,6 +140,9 @@ func TestProtoFile(t *testing.T) {
 		"message ListRequest {}\n",
 		"message CountResponse {\n  int64 value = 1;\n}\n",
 		"message ShopLine {\n  string sku = 1;\n  int32 qty = 2;\n}\n",
+		"message PayRequest {\n  string order_id = 1 [json_name = \"order_id\"];\n  oneof method {\n    PayCard card = 2;\n    string voucher = 3;\n  }\n}\n",
+		"message PayResult {\n  PayState state = 1;\n  string via = 2;\n}\n",
+		"enum PayState {\n  PAY_STATE_UNSPECIFIED = 0;\n  PAY_STATE_PENDING = 1;\n  PAY_STATE_PAID = 2;\n}\n",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing:\n%s\nin:\n%s", want, got)
@@ -209,6 +241,27 @@ func TestProtobufClientCallsTheService(t *testing.T) {
 	}
 	if count.Get(count.Descriptor().Fields().ByName("value")).Int() != 3 {
 		t.Fatalf("count: %v", count)
+	}
+
+	// A oneof and an enum.
+	pay, result := msg("PayRequest"), msg("PayResult")
+	pay.Set(pay.Descriptor().Fields().ByName("voucher"), protoreflect.ValueOfString("XMAS"))
+	if err := conn.Invoke(ctx, "/shop.v1.Orders/Pay", pay, result); err != nil {
+		t.Fatal(err)
+	}
+	state := result.Descriptor().Fields().ByName("state")
+	if name := state.Enum().Values().ByNumber(result.Get(state).Enum()).Name(); name != "PAY_STATE_PENDING" || str(result, "via") != "voucher XMAS" {
+		t.Fatalf("pay: %v", result)
+	}
+	cardMsg := msg("PayCard")
+	cardMsg.Set(cardMsg.Descriptor().Fields().ByName("last4"), protoreflect.ValueOfString("4242"))
+	pay.Set(pay.Descriptor().Fields().ByName("card"), protoreflect.ValueOfMessage(cardMsg)) // replaces the voucher
+	result = msg("PayResult")
+	if err := conn.Invoke(ctx, "/shop.v1.Orders/Pay", pay, result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Get(state).Enum() != 2 || str(result, "via") != "card 4242" {
+		t.Fatalf("pay by card: %v", result)
 	}
 
 	// Server stream.

@@ -82,7 +82,7 @@ func run(ctx context.Context) error {
 
 	// Shed load first, then trace, recover, log and bound every call.
 	shed := middleware.LoadShed(512)
-	mws := kakarot.Chain(shed, otelx.Middleware(), middleware.Default(log, 5*time.Second))
+	mws := kakarot.Chain(shed, otelx.Middleware(), outbox.Carry(otelx.Headers), middleware.Default(log, 5*time.Second))
 
 	r := httpx.NewRouter()
 	r.Use(otelx.HTTP())
@@ -99,7 +99,7 @@ func run(ctx context.Context) error {
 	// it in one process; swap in your broker's client for more.
 	broker := &queue.Memory{}
 	relay := &outbox.Relay{DB: db, Logger: log, Publisher: outbox.ToQueue(broker)}
-	consumer := &queue.Consumer{Service: "order", Source: broker, Logger: log}
+	consumer := &queue.Consumer{Service: "order", Source: broker, Logger: log, Extract: otelx.WithHeaders}
 	transport.RegisterOrderQueue(consumer, eps, kakarot.Chain(otelx.Middleware(), middleware.Default(log, 30*time.Second)))
 
 	app := &kakarot.App{

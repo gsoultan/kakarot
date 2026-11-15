@@ -35,16 +35,47 @@ import (
 // consumers cannot disagree about what a topic carries.
 type Topic[T any] string
 
+type injectKey struct{}
+
+// Carry returns middleware that makes every event added during a call
+// remember headers taken from the call's context, such as a trace context.
+// The relay hands them to the broker, so a consumer continues the trace of
+// the request that caused the event:
+//
+//	mws := kakarot.Chain(otelx.Middleware(), outbox.Carry(otelx.Headers), ...)
+//
+// Put it after the middleware that fills the context.
+func Carry(inject func(ctx context.Context) map[string]string) kakarot.Middleware {
+	return func(ctx context.Context, _ kakarot.Op, next kakarot.Next) error {
+		return next(WithHeaders(ctx, inject))
+	}
+}
+
+// WithHeaders is Carry for code that does not run under middleware: events
+// added with the returned context store what inject reads from it.
+func WithHeaders(ctx context.Context, inject func(ctx context.Context) map[string]string) context.Context {
+	return context.WithValue(ctx, injectKey{}, inject)
+}
+
 // Add writes an event to the outbox using the transaction in ctx (or db).
 func (t Topic[T]) Add(ctx context.Context, db storm.Executor, key string, payload T) error {
 	b, err := json.Marshal(payload)
 	if err != nil {
 		return kakarot.E(kakarot.CodeInternal, "encode event", err)
 	}
+	headers := []byte("{}")
+	if inject, ok := ctx.Value(injectKey{}).(func(context.Context) map[string]string); ok && inject != nil {
+		if h := inject(ctx); len(h) > 0 {
+			if headers, err = json.Marshal(h); err != nil {
+				return kakarot.E(kakarot.CodeInternal, "encode event headers", err)
+			}
+		}
+	}
 	ins := outboxevent.Create()
 	ins.SetTopic(string(t))
 	ins.SetKey(key)
 	ins.SetPayload(b)
+	ins.SetHeaders(headers)
 	_, err = ins.Insert(ctx, data.Executor(ctx, db))
 	return data.MapErr(err)
 }
@@ -74,7 +105,7 @@ type QueuePublisher interface {
 // outbox events to queue consumers.
 func ToQueue(b QueuePublisher) Publisher {
 	return PublisherFunc(func(ctx context.Context, m Message) error {
-		return b.Publish(ctx, queue.Message{ID: m.ID, Topic: m.Topic, Key: m.Key, Payload: m.Payload, Attempts: m.Attempts})
+		return b.Publish(ctx, queue.Message{ID: m.ID, Topic: m.Topic, Key: m.Key, Payload: m.Payload, Headers: m.Headers, Attempts: m.Attempts})
 	})
 }
 
@@ -84,6 +115,7 @@ type Message struct {
 	Topic     string
 	Key       string
 	Payload   []byte
+	Headers   map[string]string // stored with the event by Carry or WithHeaders
 	Attempts  int32
 	CreatedAt time.Time
 }
@@ -153,11 +185,16 @@ func (r *Relay) RunOnce(ctx context.Context) (int, error) {
 		}
 		for _, row := range rows {
 			m := outboxevent.Mutate(row)
+			var headers map[string]string
+			if len(row.Headers) > 0 {
+				_ = json.Unmarshal(row.Headers, &headers) // headers are optional context, never a reason to hold an event
+			}
 			perr := r.Publisher.Publish(ctx, Message{
 				ID:        uuid.UUID(row.ID).String(),
 				Topic:     row.Topic,
 				Key:       row.Key,
 				Payload:   row.Payload,
+				Headers:   headers,
 				Attempts:  row.Attempts,
 				CreatedAt: row.CreatedAt,
 			})

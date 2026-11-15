@@ -35,10 +35,26 @@ import (
 //	*T                           optional T
 //	[]T                          repeated T
 //	map[K]V                      map<K, V>
+//	a string type with ProtoEnum enum
+//	pointer fields tagged oneof  oneof
 //
 // A field's number is its position among the struct's exported fields,
 // counted from 1, or the N of a `proto:"N"` tag. Fields tagged `json:"-"` or
 // `proto:"-"` are left out.
+//
+// An enum is a named string type that lists its values:
+//
+//	type Status string
+//	func (Status) ProtoEnum() []Status { return []Status{Pending, Paid} }
+//
+// The empty string is number 0 (STATUS_UNSPECIFIED) and the listed values
+// are 1, 2, ... in order, so add new values at the end.
+//
+// A oneof is a group of pointer fields that share a name in their tag; at
+// most one of them may be set:
+//
+//	Card *Card `json:"card" proto:",oneof=method"`
+//	Bank *Bank `json:"bank" proto:",oneof=method"`
 
 type kind int
 
@@ -56,6 +72,7 @@ const (
 	kTimestamp
 	kDuration
 	kText
+	kEnum
 )
 
 // shape describes how one Go type is written in protobuf.
@@ -70,6 +87,9 @@ type shape struct {
 
 	fields []field // kMessage
 	byNum  map[protowire.Number]*field
+
+	values  []string         // kEnum: values[i] is number i+1
+	numbers map[string]int32 // kEnum
 }
 
 type field struct {
@@ -78,6 +98,7 @@ type field struct {
 	json  string // name in the JSON encoding
 	index int
 	shape *shape
+	oneof string // the group this field belongs to, if any
 }
 
 func (s *shape) goType() reflect.Type {
@@ -92,7 +113,7 @@ func (s *shape) singular() bool { return !s.list && !s.dict }
 // packable reports whether a list of s is written packed.
 func (s *shape) packable() bool {
 	switch s.kind {
-	case kBool, kInt64, kInt32, kUint64, kUint32, kDouble, kFloat:
+	case kBool, kInt64, kInt32, kUint64, kUint32, kDouble, kFloat, kEnum:
 		return !s.ptr
 	}
 	return false
@@ -100,7 +121,7 @@ func (s *shape) packable() bool {
 
 func (s *shape) wireType() protowire.Type {
 	switch s.kind {
-	case kBool, kInt64, kInt32, kUint64, kUint32:
+	case kBool, kInt64, kInt32, kUint64, kUint32, kEnum:
 		return protowire.VarintType
 	case kDouble:
 		return protowire.Fixed64Type
@@ -154,6 +175,9 @@ func build(t reflect.Type, building map[reflect.Type]*shape) (*shape, error) {
 	}
 	switch t.Kind() {
 	case reflect.String:
+		if m, ok := t.MethodByName("ProtoEnum"); ok {
+			return enumShape(t, m)
+		}
 		return &shape{kind: kString, rt: t}, nil
 	case reflect.Bool:
 		return &shape{kind: kBool, rt: t}, nil
@@ -229,6 +253,11 @@ func build(t reflect.Type, building map[reflect.Type]*shape) (*shape, error) {
 			}
 			pos++
 			num := pos
+			tag, opt, _ := strings.Cut(tag, ",")
+			oneof, isOneof := strings.CutPrefix(opt, "oneof=")
+			if opt != "" && (!isOneof || oneof == "") {
+				return nil, fmt.Errorf("%s.%s: proto tag option %q is not oneof=<name>", t, sf.Name, opt)
+			}
 			if tag != "" {
 				n, err := strconv.Atoi(tag)
 				if err != nil {
@@ -253,8 +282,14 @@ func build(t reflect.Type, building map[reflect.Type]*shape) (*shape, error) {
 			if names[name] {
 				return nil, fmt.Errorf("%s.%s: protobuf field name %q is used twice", t, sf.Name, name)
 			}
+			if oneof != "" && (!fs.singular() || !fs.ptr) {
+				return nil, fmt.Errorf("%s.%s: a oneof field is a pointer, so that it can be unset", t, sf.Name)
+			}
+			if oneof != "" && names[oneof] {
+				return nil, fmt.Errorf("%s.%s: oneof %q has the name of a field", t, sf.Name, oneof)
+			}
 			names[name], nums[num] = true, true
-			s.fields = append(s.fields, field{num: protowire.Number(num), name: name, json: jsonName, index: i, shape: fs})
+			s.fields = append(s.fields, field{num: protowire.Number(num), name: name, json: jsonName, index: i, shape: fs, oneof: oneof})
 		}
 		for i := range s.fields {
 			s.byNum[s.fields[i].num] = &s.fields[i]
@@ -262,6 +297,37 @@ func build(t reflect.Type, building map[reflect.Type]*shape) (*shape, error) {
 		return s, nil
 	}
 	return nil, fmt.Errorf("%s: protobuf cannot carry a %s", t, t.Kind())
+}
+
+// enumShape describes a string type whose ProtoEnum method lists its values.
+func enumShape(t reflect.Type, m reflect.Method) (*shape, error) {
+	mt := m.Type // the receiver is the first argument
+	if mt.NumIn() != 1 || mt.NumOut() != 1 || mt.Out(0).Kind() != reflect.Slice || mt.Out(0).Elem().Kind() != reflect.String {
+		return nil, fmt.Errorf("%s: ProtoEnum must be func (%s) ProtoEnum() []%s", t, t.Name(), t.Name())
+	}
+	list := m.Func.Call([]reflect.Value{reflect.Zero(t)})[0]
+	s := &shape{kind: kEnum, rt: t, numbers: map[string]int32{}}
+	for i := range list.Len() {
+		v := list.Index(i).String()
+		if _, dup := s.numbers[v]; dup || v == "" {
+			return nil, fmt.Errorf("%s: ProtoEnum lists %q twice or lists the empty value", t, v)
+		}
+		s.values = append(s.values, v)
+		s.numbers[v] = int32(i + 1)
+	}
+	return s, nil
+}
+
+// enumNumber is the wire number of an enum value: 0 for the empty string.
+func (s *shape) enumNumber(v reflect.Value) (int32, error) {
+	if v.Len() == 0 {
+		return 0, nil
+	}
+	n, ok := s.numbers[v.String()]
+	if !ok {
+		return 0, fmt.Errorf("%q is not a value of %s", v.String(), s.rt)
+	}
+	return n, nil
 }
 
 // protoName turns a JSON or Go field name into a protobuf one: lower snake
@@ -340,11 +406,24 @@ func unmarshalProto(b []byte, v any) error {
 }
 
 func (s *shape) appendMessage(b []byte, v reflect.Value) ([]byte, error) {
-	var err error
+	var (
+		err error
+		set map[string]string // oneof -> the member that is set
+	)
 	for i := range s.fields {
 		f := &s.fields[i]
-		if b, err = f.shape.appendField(b, f.num, v.Field(f.index), false); err != nil {
-			return nil, err
+		fv := v.Field(f.index)
+		if f.oneof != "" && !fv.IsNil() {
+			if other, twice := set[f.oneof]; twice {
+				return nil, fmt.Errorf("%s: %s and %s are both set, but oneof %s takes one", s.rt, other, f.name, f.oneof)
+			}
+			if set == nil {
+				set = map[string]string{}
+			}
+			set[f.oneof] = f.name
+		}
+		if b, err = f.shape.appendField(b, f.num, fv, false); err != nil {
+			return nil, fmt.Errorf("%s: %w", f.name, err)
 		}
 	}
 	return b, nil
@@ -376,6 +455,11 @@ func (s *shape) appendField(b []byte, num protowire.Number, v reflect.Value, alw
 		if s.elem.packable() {
 			var packed []byte
 			for i := range v.Len() {
+				if s.elem.kind == kEnum {
+					if _, err := s.elem.enumNumber(v.Index(i)); err != nil {
+						return nil, err
+					}
+				}
 				packed = s.elem.appendScalar(packed, v.Index(i))
 			}
 			return protowire.AppendBytes(protowire.AppendTag(b, num, protowire.BytesType), packed), nil
@@ -435,6 +519,11 @@ func (s *shape) appendField(b []byte, num protowire.Number, v reflect.Value, alw
 	if v.IsZero() && !always {
 		return b, nil
 	}
+	if s.kind == kEnum {
+		if _, err := s.enumNumber(v); err != nil {
+			return nil, err
+		}
+	}
 	return s.appendScalar(protowire.AppendTag(b, num, s.wireType()), v), nil
 }
 
@@ -469,6 +558,9 @@ func (s *shape) appendScalar(b []byte, v reflect.Value) []byte {
 		return protowire.AppendVarint(b, uint64(v.Int()))
 	case kUint64, kUint32:
 		return protowire.AppendVarint(b, v.Uint())
+	case kEnum:
+		n, _ := s.enumNumber(v) // checked by the caller
+		return protowire.AppendVarint(b, uint64(n))
 	case kDouble:
 		return protowire.AppendFixed64(b, math.Float64bits(v.Float()))
 	default: // kFloat
@@ -534,6 +626,13 @@ func (s *shape) readMessage(b []byte, v reflect.Value) error {
 		n, err := f.shape.consume(b, wt, v.Field(f.index))
 		if err != nil {
 			return 0, fmt.Errorf("%s: %w", f.name, err)
+		}
+		if f.oneof != "" { // the last member on the wire wins
+			for i := range s.fields {
+				if o := &s.fields[i]; o.oneof == f.oneof && o != f {
+					v.Field(o.index).SetZero()
+				}
+			}
 		}
 		return n, nil
 	})
@@ -613,6 +712,15 @@ func (s *shape) consume(b []byte, wt protowire.Type, v reflect.Value) (int, erro
 			v.SetBool(protowire.DecodeBool(x))
 		case kInt64, kInt32:
 			v.SetInt(int64(x))
+		case kEnum:
+			switch {
+			case x == 0:
+				v.SetString("")
+			case x <= uint64(len(s.values)):
+				v.SetString(s.values[x-1])
+			default:
+				return 0, fmt.Errorf("%d is not a value of %s", x, s.rt)
+			}
 		default:
 			v.SetUint(x)
 		}
