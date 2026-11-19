@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- `kafkax`: publishing to a topic that does not exist yet, including the dead-letter topic, failed with `UNKNOWN_TOPIC_OR_PARTITION` even on a cluster that creates topics on first use; a missing dead-letter topic held its partition forever. The broker now asks the cluster to create it.
+- `kafkax`: a message whose handler finished just before shutdown was not committed and was delivered again.
+- `sqsx`: a payload that is not text SQS accepts (protobuf, any binary) was refused; it now travels base64-encoded.
+- `sqsx`: a message without an ID was refused by a FIFO queue without content-based deduplication; it is now deduplicated by its payload.
+
+### Tests
+
+- `kafkax/integration` runs against a real Kafka cluster when `KAKAROT_TEST_KAFKA` is set, and `sqsx/integration` against LocalStack or Amazon SQS when `KAKAROT_TEST_SQS` is set. CI runs both against containers.
+
 ## v0.1.0
 
 The first release.

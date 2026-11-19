@@ -91,7 +91,7 @@ relay := &outbox.Relay{DB: db, Publisher: outbox.ToQueue(broker)}
 | `Backoff` | pause between those tries | 1s |
 | `DeadLetter` | suffix of the topic that takes a message after `MaxDeliver` failures | none: the message is logged and skipped |
 
-A message's key is the record key, so messages with one key stay in order. An offset is committed only after its handler returned. Kafka cannot redeliver a single record, so a failed message is tried again in place, and its partition waits until it succeeds or reaches `MaxDeliver`. A new group starts at the oldest message.
+A message's key is the record key, so messages with one key stay in order. An offset is committed only after its handler returned. Kafka cannot redeliver a single record, so a failed message is tried again in place, and its partition waits until it succeeds or reaches `MaxDeliver`. A new group starts at the oldest message. A handler that finished is committed even when shutdown begins meanwhile. A topic that does not exist yet, the dead-letter topic included, is created on first use when the cluster allows it (`auto.create.topics.enable`, Kafka's default); otherwise create every topic beforehand.
 
 ## With Amazon SQS
 
@@ -109,7 +109,7 @@ broker := &sqsx.Broker{Client: sqs.NewFromConfig(cfg), Queues: map[string]string
 | `Backoff` | how long a failed message stays hidden before SQS delivers it again | 5s |
 | `Wait` | long-poll time of one receive call, at most 20s | 20s |
 
-A queue hands each message to one consumer. Give every service that handles a topic its own queue and fan out to them with an SNS topic. A message that keeps failing moves to the dead-letter queue of the queue's redrive policy. On a FIFO queue the key is the message group and the event's ID deduplicates a repeated publish. Headers travel as message attributes; SQS allows ten per message and the broker uses up to two.
+A queue hands each message to one consumer. Give every service that handles a topic its own queue and fan out to them with an SNS topic. A message that keeps failing moves to the dead-letter queue of the queue's redrive policy. On a FIFO queue the key is the message group and the event's ID deduplicates a repeated publish; a message without an ID is deduplicated by its payload, as content-based deduplication does. A payload SQS does not accept as text, such as protobuf, travels base64-encoded and arrives as it was sent. Headers travel as message attributes; SQS allows ten per message and the broker uses up to three.
 
 ## Failures
 
@@ -147,4 +147,12 @@ Subscribe(ctx context.Context, topic string, h queue.Handler) error // queue.Sub
 Publish(ctx context.Context, m queue.Message) error                 // outbox.QueuePublisher
 ```
 
-`natsx/natsx.go` is about 170 lines and is a template for another broker. The NATS and Kafka tests run against a server started inside the test (`natsx/integration`, `kafkax/integration`).
+`natsx/natsx.go` is about 170 lines and is a template for another broker. The NATS and Kafka tests run against a server started inside the test (`natsx/integration`, `kafkax/integration`). The Kafka tests run against a real cluster when `KAKAROT_TEST_KAFKA` names its seed brokers, and the SQS tests in `sqsx/integration` run when `KAKAROT_TEST_SQS` is an endpoint URL (LocalStack) or `aws`:
+
+```console
+$ docker run -d -p 9092:9092 apache/kafka:4.1.0
+$ docker run -d -p 4566:4566 -e SERVICES=sqs localstack/localstack:4.9
+$ cd kafkax/integration && KAKAROT_TEST_KAFKA=localhost:9092 go test -race ./...
+$ cd sqsx/integration && KAKAROT_TEST_SQS=http://localhost:4566 go test -race ./...
+$ cd sqsx/integration && KAKAROT_TEST_SQS=aws go test -race ./...   # real SQS: the default AWS credentials and region
+```

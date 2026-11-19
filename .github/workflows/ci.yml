@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        module: [".", transport/grpcx, transport/wsx, data, otelx, natsx, natsx/integration, kafkax, kafkax/integration, sqsx, cmd/kakarot, examples/orders, examples/wallet, examples/checkout]
+        module: [".", transport/grpcx, transport/wsx, data, otelx, natsx, natsx/integration, kafkax, kafkax/integration, sqsx, sqsx/integration, cmd/kakarot, examples/orders, examples/wallet, examples/checkout]
     defaults:
       run:
         working-directory: ${{ matrix.module }}
@@ -47,3 +47,42 @@ jobs:
         run: go tool kakarot check
       - name: vulnerability scan
         run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  # The broker modules' integration tests again, against a real Kafka broker
+  # and LocalStack's SQS instead of the in-memory stand-ins.
+  brokers:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [kafkax/integration, sqsx/integration]
+    defaults:
+      run:
+        working-directory: ${{ matrix.module }}
+    services:
+      kafka:
+        image: apache/kafka:4.1.0
+        ports: ["9092:9092"]
+        options: >-
+          --health-cmd "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092"
+          --health-interval 5s --health-timeout 10s --health-retries 20
+      localstack:
+        image: localstack/localstack:4.9
+        env:
+          SERVICES: sqs
+        ports: ["4566:4566"]
+        options: >-
+          --health-cmd "curl -fs localhost:4566/_localstack/health"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ matrix.module }}/go.mod
+          cache-dependency-path: ${{ matrix.module }}/go.sum
+      - run: go test -race -count=1 -v ./...
+        env:
+          KAKAROT_TEST_KAFKA: localhost:9092
+          KAKAROT_TEST_SQS: http://localhost:4566
