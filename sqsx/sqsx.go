@@ -17,11 +17,15 @@ package sqsx
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"log/slog"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
@@ -31,8 +35,9 @@ import (
 )
 
 const (
-	idAttribute  = "Kakarot-Id"
-	keyAttribute = "Kakarot-Key"
+	idAttribute       = "Kakarot-Id"
+	keyAttribute      = "Kakarot-Key"
+	encodingAttribute = "Kakarot-Encoding"
 )
 
 // API is the part of the SQS client a Broker uses. *sqs.Client implements
@@ -70,15 +75,19 @@ func (b *Broker) queue(topic string) (string, error) {
 }
 
 // Publish sends m to its topic's queue. Headers travel as message
-// attributes, of which SQS allows ten; a Broker uses up to two of them. On a
-// FIFO queue the key is the message group, which keeps one key's messages
-// in order, and the ID deduplicates a repeated publish.
+// attributes, of which SQS allows ten; a Broker uses up to three of them. A
+// payload that SQS does not accept as text, such as protobuf, travels
+// base64-encoded and arrives as it was sent. On a FIFO queue the key is the
+// message group, which keeps one key's messages in order, and the ID
+// deduplicates a repeated publish; a message without an ID is deduplicated
+// by its payload, as content-based deduplication does.
 func (b *Broker) Publish(ctx context.Context, m queue.Message) error {
 	url, err := b.queue(m.Topic)
 	if err != nil {
 		return err
 	}
-	in := &sqs.SendMessageInput{QueueUrl: aws.String(url), MessageBody: aws.String(string(m.Payload)), MessageAttributes: map[string]types.MessageAttributeValue{}}
+	body := string(m.Payload)
+	in := &sqs.SendMessageInput{QueueUrl: aws.String(url), MessageAttributes: map[string]types.MessageAttributeValue{}}
 	set := func(k, v string) {
 		if v != "" {
 			in.MessageAttributes[k] = types.MessageAttributeValue{DataType: aws.String("String"), StringValue: aws.String(v)}
@@ -89,15 +98,23 @@ func (b *Broker) Publish(ctx context.Context, m queue.Message) error {
 	}
 	set(idAttribute, m.ID)
 	set(keyAttribute, m.Key)
+	if !isText(body) {
+		body = base64.StdEncoding.EncodeToString(m.Payload)
+		set(encodingAttribute, "base64")
+	}
+	in.MessageBody = aws.String(body)
 	if strings.HasSuffix(url, ".fifo") {
 		group := m.Key
 		if group == "" {
 			group = m.Topic
 		}
 		in.MessageGroupId = aws.String(group)
-		if m.ID != "" {
-			in.MessageDeduplicationId = aws.String(m.ID)
+		dedup := m.ID
+		if dedup == "" { // as content-based deduplication would
+			sum := sha256.Sum256(m.Payload)
+			dedup = hex.EncodeToString(sum[:])
 		}
+		in.MessageDeduplicationId = aws.String(dedup)
 	}
 	_, err = b.Client.SendMessage(ctx, in)
 	return err
@@ -161,10 +178,33 @@ func (b *Broker) Subscribe(ctx context.Context, topic string, h queue.Handler) e
 	return nil
 }
 
+// isText reports whether s is a message body SQS accepts as it is: valid
+// UTF-8 of the characters #x9, #xA, #xD, #x20 to #xD7FF, #xE000 to #xFFFD
+// and #x10000 to #x10FFFF.
+func isText(s string) bool {
+	if !utf8.ValidString(s) {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r == '\t', r == '\n', r == '\r':
+		case r < 0x20, r >= 0xD800 && r < 0xE000, r == 0xFFFE, r == 0xFFFF:
+			return false
+		}
+	}
+	return true
+}
+
 func message(topic string, raw types.Message) queue.Message {
 	m := queue.Message{ID: aws.ToString(raw.MessageId), Topic: topic, Payload: []byte(aws.ToString(raw.Body)), Headers: map[string]string{}}
 	for k, v := range raw.MessageAttributes {
 		switch k {
+		case encodingAttribute:
+			if aws.ToString(v.StringValue) == "base64" {
+				if b, err := base64.StdEncoding.DecodeString(aws.ToString(raw.Body)); err == nil {
+					m.Payload = b
+				}
+			}
 		case idAttribute:
 			m.ID = aws.ToString(v.StringValue)
 		case keyAttribute:

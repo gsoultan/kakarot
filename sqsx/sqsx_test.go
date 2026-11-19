@@ -3,6 +3,7 @@ package sqsx_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -215,11 +216,54 @@ func TestFIFOQueueGroupsByKeyAndDeduplicatesByID(t *testing.T) {
 	if aws.ToString(keyed.MessageGroupId) != "customer-1" || aws.ToString(keyed.MessageDeduplicationId) != "evt-1" {
 		t.Fatalf("keyed: %v %v", keyed.MessageGroupId, keyed.MessageDeduplicationId)
 	}
-	if aws.ToString(bare.MessageGroupId) != "order.placed" || bare.MessageDeduplicationId != nil {
-		t.Fatalf("bare: %v %v", bare.MessageGroupId, bare.MessageDeduplicationId)
+	// Without an ID the body deduplicates, as SQS's content-based
+	// deduplication does; without it SQS refuses the message.
+	if aws.ToString(bare.MessageGroupId) != "order.placed" || len(aws.ToString(bare.MessageDeduplicationId)) != 64 {
+		t.Fatalf("bare: %v %v", aws.ToString(bare.MessageGroupId), aws.ToString(bare.MessageDeduplicationId))
 	}
 	if plain.MessageGroupId != nil || plain.MessageDeduplicationId != nil {
 		t.Fatal("a standard queue takes no group or deduplication id")
+	}
+}
+
+func TestPayloadThatIsNotTextTravelsAsBase64(t *testing.T) {
+	fake := &fakeSQS{}
+	b := &sqsx.Broker{Client: fake, Queues: map[string]string{"order.placed": queueURL}}
+	payloads := [][]byte{[]byte(`{"order_id":"o-1"}`), {0x0a, 0x03, 'o', '-', '1', 0x00, 0xff}, []byte("tab\tand \uFFFE")}
+	got := make(chan queue.Message, len(payloads))
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go b.Subscribe(ctx, "order.placed", func(_ context.Context, m queue.Message) error {
+		got <- m
+		return nil
+	})
+	for _, p := range payloads {
+		if err := b.Publish(t.Context(), queue.Message{Topic: "order.placed", Payload: p}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if body := aws.ToString(fake.sent[0].MessageBody); body != `{"order_id":"o-1"}` {
+		t.Fatalf("text payload sent as %q", body)
+	}
+	for i, in := range fake.sent[1:] {
+		for _, r := range aws.ToString(in.MessageBody) {
+			if r < 0x20 || r > 0x7e {
+				t.Fatalf("payload %d sent with %q", i+1, r)
+			}
+		}
+	}
+	for range payloads {
+		select {
+		case m := <-got:
+			if !slices.ContainsFunc(payloads, func(p []byte) bool { return string(p) == string(m.Payload) }) {
+				t.Fatalf("payload %x arrived", m.Payload)
+			}
+			if len(m.Headers) != 0 {
+				t.Fatalf("headers %v", m.Headers)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("not every message arrived")
+		}
 	}
 }
 
