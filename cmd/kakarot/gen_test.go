@@ -140,6 +140,28 @@ func TestGenerateCompiles(t *testing.T) {
 		t.Error("method without //kakarot:http was routed")
 	}
 
+	// The .proto is what grpcx's Service.Proto writes for the same methods.
+	pr, err := os.ReadFile(filepath.Join(dir, "api", "chat.proto"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"// Written by kakarot from the Go service chat.ChatService. Do not edit.",
+		"package chat;",
+		"rpc Send(Msg) returns (Ack);",
+		"rpc Tail(Room) returns (stream Msg);",
+		"rpc Bulk(stream Msg) returns (Ack);",
+		"rpc Live(stream Msg) returns (stream Msg);",
+		"message Ack {\n  bool ok = 1 [json_name = \"OK\"];\n}",
+	} {
+		if !strings.Contains(string(pr), want) {
+			t.Errorf("chat.proto lacks %q:\n%s", want, pr)
+		}
+	}
+	if strings.Contains(string(pr), "Internal") {
+		t.Error("method without //kakarot:grpc is in the .proto")
+	}
+
 	tidy := exec.Command("go", "mod", "tidy")
 	tidy.Dir = dir
 	if out, err := tidy.CombinedOutput(); err != nil {
@@ -149,6 +171,18 @@ func TestGenerateCompiles(t *testing.T) {
 	cmd.Dir = dir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("generated code does not build: %v\n%s", err, out)
+	}
+
+	// kakarot check compares the .proto like the Go files.
+	if err := check(dir); err != nil {
+		t.Fatalf("a freshly generated project must pass check: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "api", "chat.proto"), append(pr, "// edited\n"...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := stderr(t, func() { err = check(dir) })
+	if err == nil || !strings.Contains(out, "chat.proto: out of date") {
+		t.Fatalf("check must report the edited .proto: err=%v\n%s", err, out)
 	}
 }
 
