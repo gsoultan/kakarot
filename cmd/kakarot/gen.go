@@ -34,7 +34,8 @@ type service struct {
 }
 
 // generate reads the service package in dir and writes
-// ../endpoint/endpoints_gen.go and ../transport/http_gen.go.
+// ../endpoint/endpoints_gen.go, the transport files in ../transport and,
+// for services with //kakarot:grpc methods, ../api/<group>.proto.
 func generate(dir string) error {
 	cfg := &packages.Config{Mode: packages.NeedName | packages.NeedTypes | packages.NeedSyntax | packages.NeedTypesInfo, Dir: dir}
 	pkgs, err := packages.Load(cfg, ".")
@@ -121,7 +122,9 @@ func generate(dir string) error {
 			return err
 		}
 	}
-	return nil
+	// Last, because it builds the project: the Go files above are written
+	// even when the build fails.
+	return writeProtos(pkg, svcs, filepath.Join(dir, ".."))
 }
 
 // stale, when set, makes writeGo collect the files whose content on disk
@@ -138,6 +141,12 @@ func writeGo(path string, tmpl *template.Template, data map[string]any) error {
 	if err != nil {
 		return fmt.Errorf("kakarot gen: %s: %w\n%s", path, err, buf.Bytes())
 	}
+	return writeFile(path, src)
+}
+
+// writeFile writes a generated file, or under kakarot check records it as
+// stale when its content on disk differs.
+func writeFile(path string, src []byte) error {
 	if stale != nil { // kakarot check: compare, do not write
 		if old, err := os.ReadFile(path); err != nil || !bytes.Equal(old, src) {
 			*stale = append(*stale, filepath.Clean(path))
