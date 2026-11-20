@@ -6,6 +6,7 @@ require (
 	github.com/gsoultan/kakarot v0.1.0
 	github.com/gsoultan/kakarot/kafkax v0.1.0
 	github.com/twmb/franz-go v1.22.3
+	github.com/twmb/franz-go/pkg/kadm v1.20.0
 	github.com/twmb/franz-go/pkg/kfake v0.0.0-20261109062748-d6ea02a174bc
 )
 
