@@ -11,7 +11,7 @@
 
 ### Tests
 
-- `kafkax/integration` runs against a real Kafka cluster when `KAKAROT_TEST_KAFKA` is set, and `sqsx/integration` against LocalStack or Amazon SQS when `KAKAROT_TEST_SQS` is set. CI runs both against containers.
+- `kafkax/integration` runs against a real Kafka cluster when `KAKAROT_TEST_KAFKA` is set, and `sqsx/integration` against LocalStack or Amazon SQS when `KAKAROT_TEST_SQS` is set. CI runs both against containers. The Kafka tests have run against Apache Kafka 4.1; the SQS tests have run against LocalStack only, not yet against Amazon SQS itself.
 
 ## v0.1.0
 
