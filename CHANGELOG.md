@@ -7,6 +7,11 @@
 - `kakarot gen` writes `api/<group>.proto` for every service with `//kakarot:grpc` methods, from the same `Service.Proto()` the server uses. `kakarot check` reports the file when it is out of date, like the generated Go code.
 - `examples/wallet` now commits `api/wallet.proto`; `examples/orders` drops its `.proto` test, which `kakarot check` replaces.
 
+### Modules
+
+- `rabbitx`: RabbitMQ broker for queue consumers and the outbox relay. Quorum queues per group, publisher confirms, unroutable messages fail instead of being dropped, redelivery with backoff, rejection to a dead-letter exchange after `MaxDeliver`, reconnection.
+- `pubsubx`: Google Cloud Pub/Sub broker for queue consumers and the outbox relay. A subscription per group, optional ordering by key, optional creation of topics and subscriptions with a retry policy and a dead-letter topic.
+
 ## v0.1.0
 
 The first release.

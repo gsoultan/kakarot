@@ -36,6 +36,8 @@ The core has no dependencies outside the Go standard library. Anything that pull
 | `github.com/gsoultan/kakarot/natsx` | NATS JetStream broker for queue consumers and the outbox relay | nats.go |
 | `github.com/gsoultan/kakarot/kafkax` | Kafka broker | franz-go |
 | `github.com/gsoultan/kakarot/sqsx` | Amazon SQS broker | aws-sdk-go-v2 |
+| `github.com/gsoultan/kakarot/rabbitx` | RabbitMQ broker | amqp091-go |
+| `github.com/gsoultan/kakarot/pubsubx` | Google Cloud Pub/Sub broker | cloud.google.com/go/pubsub/v2 |
 | `github.com/gsoultan/kakarot/cmd/kakarot` | CLI: `new`, `gen`, `check` | x/tools |
 | `examples/orders` | a complete service on every layer | all of the above |
 | `examples/checkout` | a synchronous request followed by asynchronous payment, shipping, compensation and expiry | core, `data` |
@@ -265,7 +267,7 @@ s.getOrder = grpcx.Unary(op, eps.GetOrder, fromProto, toProto, mws...)
 A message handler is an ordinary endpoint, so it gets the same middleware, validation and tests as an HTTP route.
 
 ```go
-broker := &queue.Memory{} // in process; natsx, kafkax or sqsx across services, or your own queue.Subscriber
+broker := &queue.Memory{} // in process; natsx, kafkax, sqsx, rabbitx or pubsubx across services, or your own queue.Subscriber
 consumer := &queue.Consumer{Service: "order", Source: broker, Logger: log}
 transport.RegisterOrderQueue(consumer, eps, mws) // generated from //kakarot:queue
 app.Servers = append(app.Servers, consumer)      // runs and stops with the app
@@ -273,7 +275,7 @@ app.Servers = append(app.Servers, consumer)      // runs and stops with the app
 
 A handler error asks the broker to redeliver, except errors a retry cannot fix (`invalid`, `not_found`, `unauthorized`, `forbidden`) and payloads that do not decode: those go to `Consumer.DeadLetter`. A broker is one method, `Subscribe(ctx, topic, handler)`.
 
-**Brokers** ship for NATS JetStream (`natsx`), Kafka (`kafkax`) and Amazon SQS (`sqsx`). One `Broker` is both sides: the consumer's source and the outbox relay's publisher.
+**Brokers** ship for NATS JetStream (`natsx`), Kafka (`kafkax`), Amazon SQS (`sqsx`), RabbitMQ (`rabbitx`) and Google Cloud Pub/Sub (`pubsubx`). One `Broker` is both sides: the consumer's source and the outbox relay's publisher.
 
 ```go
 broker := &natsx.Broker{Conn: nc, Stream: "ORDERS", Subjects: []string{"order.>"}, Group: "billing"}
@@ -286,6 +288,8 @@ Instances that share a `Group` share the work; a failed handler gets the message
 ```go
 kafka := &kafkax.Broker{Brokers: []string{"localhost:9092"}, Group: "billing", DeadLetter: ".dead"}
 aws := &sqsx.Broker{Client: sqs.NewFromConfig(cfg), Queues: map[string]string{"order.placed": queueURL}}
+rabbit := &rabbitx.Broker{URL: "amqp://localhost:5672/", Exchange: "orders", Group: "billing", DeadLetter: "orders.dead"}
+gcp := &pubsubx.Broker{Client: pubsubClient, Group: "billing", DeadLetter: ".dead"}
 ```
 
 [docs/events.md](docs/events.md) has the settings and the retry behaviour of each.

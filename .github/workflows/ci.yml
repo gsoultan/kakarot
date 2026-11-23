@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        module: [".", transport/grpcx, transport/wsx, data, otelx, natsx, natsx/integration, kafkax, kafkax/integration, sqsx, cmd/kakarot, examples/orders, examples/wallet, examples/checkout]
+        module: [".", transport/grpcx, transport/wsx, data, otelx, natsx, natsx/integration, kafkax, kafkax/integration, sqsx, rabbitx, pubsubx, cmd/kakarot, examples/orders, examples/wallet, examples/checkout]
     defaults:
       run:
         working-directory: ${{ matrix.module }}
@@ -29,6 +29,11 @@ jobs:
         ports: ["5432:5432"]
         options: >-
           --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+      rabbitmq:
+        image: ${{ matrix.module == 'rabbitx' && 'rabbitmq:4' || '' }}
+        ports: ["5672:5672"]
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping" --health-interval 5s --health-timeout 10s --health-retries 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -42,6 +47,7 @@ jobs:
       - run: go test -race -p 1 ./...
         env:
           KAKAROT_TEST_DSN: postgres://kk:kk@localhost:5432/orders
+          KAKAROT_TEST_AMQP: ${{ matrix.module == 'rabbitx' && 'amqp://guest:guest@localhost:5672/' || '' }}
       - name: layer rules and generated code
         if: startsWith(matrix.module, 'examples/')
         run: go tool kakarot check
