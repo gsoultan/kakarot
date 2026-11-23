@@ -31,7 +31,7 @@ Each package is one layer. A layer imports only the layers below it.
 
 ## Rules
 
-- Never edit `*_gen.go`, `*.gen.go` or anything in `data/store`. Change the source and run `go generate ./...`.
+- Never edit `*_gen.go`, `*.gen.go`, `api/*.proto` or anything in `data/store`. Change the source and run `go generate ./...`.
 - `usecase`, `service` and `domain` never import `net/http`, gRPC, storm or `data`. A usecase that needs the outside world declares an interface in `usecase` and `data` implements it.
 - Domain types are the DTOs: every layer above `data` speaks them. The types in `data/model` are database types and never leave `data`.
 - Return errors with `kakarot.E`, `kakarot.NotFound`, `kakarot.Invalid` or `kakarot.Conflict`. Transports map the code to a status. Compare with `kakarot.Is(err, code)`.

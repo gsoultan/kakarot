@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### `cmd/kakarot`
+
+- `kakarot gen` writes `api/<group>.proto` for every service with `//kakarot:grpc` methods, from the same `Service.Proto()` the server uses. `kakarot check` reports the file when it is out of date, like the generated Go code.
+- `examples/wallet` now commits `api/wallet.proto`; `examples/orders` drops its `.proto` test, which `kakarot check` replaces.
+
 ### Fixed
 
 - `kafkax`: publishing to a topic that does not exist yet, including the dead-letter topic, failed with `UNKNOWN_TOPIC_OR_PARTITION` even on a cluster that creates topics on first use; a missing dead-letter topic held its partition forever. The broker now asks the cluster to create it.

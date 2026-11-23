@@ -181,7 +181,7 @@ func relPos(pos token.Position) string {
 var errUsage = errors.New(`kakarot: tools for kakarot services
 
   kakarot new <module path> [dir]   create a new project with every layer
-  kakarot gen [service dir]         write endpoint/ and transport/ from the service interface
+  kakarot gen [service dir]         write endpoint/, transport/ and api/*.proto from the service interface
   kakarot check [project dir]       verify layer rules, //kakarot: comments and generated code
   kakarot help                      show this text
 
