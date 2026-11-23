@@ -39,7 +39,7 @@ var layerRules = map[string]struct {
 	},
 	"endpoint": {
 		layers: []string{"transport", "data", "app", "cmd"},
-		libs:   []string{"net/http", "database/sql", "github.com/gsoultan/storm", "google.golang.org/grpc"},
+		libs:   []string{"net/http", "database/sql", "github.com/gsoultan/storm", "google.golang.org/grpc", "connectrpc.com/connect"},
 		why:    "endpoints are shared by every transport",
 	},
 	"transport": {
@@ -59,6 +59,7 @@ var infraLibs = []string{
 	"net/http", "database/sql",
 	"github.com/gsoultan/storm",
 	"google.golang.org/grpc",
+	"connectrpc.com/connect",
 	"github.com/gsoultan/kakarot/transport",
 	"github.com/gsoultan/kakarot/data",
 	"github.com/gsoultan/kakarot/queue",

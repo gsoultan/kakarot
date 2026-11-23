@@ -14,6 +14,7 @@ Each directory with a `go.mod` is its own module. The core has no dependencies o
 |---|---|---|
 | `.` | `github.com/gsoultan/kakarot` | `Endpoint`, streams, `Middleware`, `Error` and codes, `App`, `Job`, `Page`; `middleware/`, `auth/`, `queue/`, `transport/httpx/`, `kakarottest/` |
 | `transport/grpcx` | own module | gRPC server and clients |
+| `transport/connectx` | own module | Connect RPC server and clients (Connect, gRPC, gRPC-Web); reuses grpcx's protobuf layout and error mapping |
 | `transport/wsx` | own module | WebSocket streams |
 | `data` | own module | storm `TxManager`, `outbox`, `idempotency` |
 | `otelx` | own module | OpenTelemetry middleware |

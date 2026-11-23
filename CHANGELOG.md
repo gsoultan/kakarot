@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### `transport/connectx` (new module)
+
+- Connect RPC with connect-go v1.21.1: `NewService`, `AddUnary`, `AddServerStream`, `AddClientStream` and `AddBidi` build one `http.Handler` from typed endpoints that answers the Connect protocol, gRPC and gRPC-Web, with JSON and protobuf. No `.proto` file or code generation is needed; `Service.Proto` writes the same file as `grpcx`.
+- Typed clients `Invoke`, `Receive`, `Send` and `Duplex`, with `Protobuf()`, `connect.WithGRPC()` and `connect.WithGRPCWeb()`. A gRPC client also calls interface-first `grpcx` servers.
+- Errors keep their kakarot code and fields (`Error`, `FromError`); `Bearer` and `WithBearer` for auth; `Carrier` for trace propagation; `NewServer` serves HTTP/1.1, HTTP/2 and h2c.
+
+### `transport/grpcx`
+
+- `ProtoCodec` returns the protobuf codec of interface-first services, so other transports encode the same layout.
+
 ### `cmd/kakarot`
 
 - `kakarot gen` writes `api/<group>.proto` for every service with `//kakarot:grpc` methods, from the same `Service.Proto()` the server uses. `kakarot check` reports the file when it is out of date, like the generated Go code.

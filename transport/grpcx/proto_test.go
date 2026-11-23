@@ -320,3 +320,31 @@ func TestProtoReportsTypesItCannotDescribe(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+func TestProtoCodecRoundTripsPlainValuesAndMessages(t *testing.T) {
+	c := grpcx.ProtoCodec()
+	if c.Name() != "proto" {
+		t.Fatalf("Name = %q, want proto", c.Name())
+	}
+	in := payRequest{OrderID: "o-1", Card: &payCard{Last4: "4242"}}
+	b, err := c.Marshal(&in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out payRequest
+	if err := c.Unmarshal(b, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.OrderID != "o-1" || out.Card == nil || out.Card.Last4 != "4242" || out.Voucher != nil {
+		t.Fatalf("round trip = %+v", out)
+	}
+
+	ts := timestamppb.New(time.Date(2026, 11, 23, 0, 0, 0, 0, time.UTC))
+	if b, err = c.Marshal(ts); err != nil {
+		t.Fatal(err)
+	}
+	got := &timestamppb.Timestamp{}
+	if err := c.Unmarshal(b, got); err != nil || !got.AsTime().Equal(ts.AsTime()) {
+		t.Fatalf("generated message round trip = %v, %v", got, err)
+	}
+}
