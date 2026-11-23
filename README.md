@@ -428,6 +428,8 @@ Each module is tested on its own:
 $ for m in . transport/grpcx transport/wsx data otelx cmd/kakarot; do (cd $m && go test -race ./...); done
 $ cd examples/orders && KAKAROT_TEST_DSN=postgres://user:pass@localhost:5432/orders go test -race ./...   # live storm tests
 $ cd examples/wallet && KAKAROT_TEST_DSN=postgres://user:pass@localhost:5432/wallet go test -race ./...   # use a separate database
+$ cd kafkax/integration && KAKAROT_TEST_KAFKA=localhost:9092 go test -race ./...     # a real Kafka
+$ cd sqsx/integration && KAKAROT_TEST_SQS=http://localhost:4566 go test -race ./...   # LocalStack, or "aws" for real SQS
 $ go run golang.org/x/vuln/cmd/govulncheck@latest ./...   # in any module
 ```
 

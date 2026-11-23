@@ -40,6 +40,8 @@ $ cd examples/checkout && KAKAROT_TEST_DSN=postgres://user:pass@localhost:5432/c
 $ cd examples/checkout && go tool kakarot check
 ```
 
+The broker tests in `kafkax/integration` use an in-memory Kafka unless `KAKAROT_TEST_KAFKA` names a real cluster's seed brokers; those in `sqsx/integration` are skipped unless `KAKAROT_TEST_SQS` is an endpoint URL (LocalStack) or `aws`. CI runs both against Kafka and LocalStack containers. [docs/events.md](docs/events.md) has the commands.
+
 After changing a `service/service.go` or a `data/model` in an example, run `go generate ./...` there.
 
 ## Rules

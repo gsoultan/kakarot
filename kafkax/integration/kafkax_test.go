@@ -3,10 +3,15 @@ package integration_test
 import (
 	"context"
 	"errors"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kfake"
 	"github.com/twmb/franz-go/pkg/kgo"
 
@@ -16,20 +21,68 @@ import (
 	"github.com/gsoultan/kakarot/queue"
 )
 
-// cluster starts an in-memory Kafka with the given topics.
-func cluster(t *testing.T, topics ...string) []string {
+// kafka is the cluster a test runs against: a real one when
+// KAKAROT_TEST_KAFKA names its seed brokers (host:port, comma separated),
+// otherwise an in-memory cluster started inside the test.
+type kafka struct {
+	t     *testing.T
+	addrs []string
+	admin *kadm.Client
+	run   string // makes topic and group names unique on a real cluster
+}
+
+func cluster(t *testing.T) *kafka {
 	t.Helper()
-	c, err := kfake.NewCluster(kfake.NumBrokers(1), kfake.SeedTopics(1, topics...))
+	k := &kafka{t: t}
+	if seeds := os.Getenv("KAKAROT_TEST_KAFKA"); seeds != "" {
+		k.addrs = strings.Split(seeds, ",")
+		k.run = "-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	} else {
+		c, err := kfake.NewCluster(kfake.NumBrokers(1), kfake.AllowAutoTopicCreation()) // as a Kafka broker does by default
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(c.Close)
+		k.addrs = c.ListenAddrs()
+	}
+	cl, err := kgo.NewClient(kgo.SeedBrokers(k.addrs...))
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(c.Close)
-	return c.ListenAddrs()
+	t.Cleanup(cl.Close)
+	k.admin = kadm.NewClient(cl)
+	return k
 }
 
-func broker(t *testing.T, addrs []string, group string) *kafkax.Broker {
-	b := &kafkax.Broker{Brokers: addrs, Group: group, Backoff: 10 * time.Millisecond}
-	t.Cleanup(b.Close)
+// topic creates a topic with the given number of partitions and returns
+// its name, which on a real cluster carries a suffix unique to the test.
+func (k *kafka) topic(name string, partitions int32) string {
+	k.t.Helper()
+	return k.create(name+k.run, partitions)
+}
+
+// create creates the topic name as it is.
+func (k *kafka) create(name string, partitions int32) string {
+	k.t.Helper()
+	res, err := k.admin.CreateTopic(k.t.Context(), partitions, 1, nil, name)
+	if err == nil {
+		err = res.Err
+	}
+	if err != nil {
+		k.t.Fatalf("create topic %s: %v", name, err)
+	}
+	if k.run != "" {
+		k.t.Cleanup(func() { k.admin.DeleteTopics(context.Background(), name) })
+	}
+	return name
+}
+
+// group returns a consumer group name unique to the test.
+func (k *kafka) group(name string) string { return name + k.run }
+
+func (k *kafka) broker(group string) *kafkax.Broker {
+	b := &kafkax.Broker{Brokers: k.addrs, Group: group, Backoff: 10 * time.Millisecond}
+	k.t.Cleanup(b.Close)
 	return b
 }
 
@@ -37,12 +90,12 @@ type placed struct {
 	OrderID string `json:"order_id"`
 }
 
-const orderPlaced queue.Topic[placed] = "order.placed"
-
 type traceKey struct{}
 
 func TestConsumerReceivesWhatWasPublished(t *testing.T) {
-	b := broker(t, cluster(t, "order.placed"), "billing")
+	k := cluster(t)
+	orderPlaced := queue.Topic[placed](k.topic("order.placed", 3))
+	b := k.broker(k.group("billing"))
 
 	type seen struct {
 		in    placed
@@ -73,23 +126,58 @@ func TestConsumerReceivesWhatWasPublished(t *testing.T) {
 		if s.in.OrderID != "o-1" || s.trace != "00-abc-def-01" {
 			t.Fatalf("got %+v", s)
 		}
-	case <-time.After(15 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("no message arrived")
 	}
 }
 
+func TestMessagesWithOneKeyArriveInOrder(t *testing.T) {
+	k := cluster(t)
+	topic := k.topic("order.placed", 3)
+	b := k.broker(k.group("billing"))
+	const n = 50
+	for i := range n {
+		key := "customer-" + strconv.Itoa(i%3)
+		if err := b.Publish(t.Context(), queue.Message{Topic: topic, Key: key, Payload: []byte(strconv.Itoa(i))}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var mu sync.Mutex
+	last := map[string]int{}
+	seen := 0
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go b.Subscribe(ctx, topic, func(_ context.Context, m queue.Message) error {
+		i, _ := strconv.Atoi(string(m.Payload))
+		mu.Lock()
+		defer mu.Unlock()
+		if prev, ok := last[m.Key]; ok && prev >= i {
+			t.Errorf("key %s: message %d after %d", m.Key, i, prev)
+		}
+		last[m.Key] = i
+		seen++
+		return nil
+	})
+	kakarottest.Eventually(t, 30*time.Second, "all messages handled", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return seen == n
+	})
+}
+
 func TestFailedMessageIsTriedAgainThenCommitted(t *testing.T) {
-	addrs := cluster(t, "order.placed")
-	b := broker(t, addrs, "billing")
-	if err := b.Publish(t.Context(), queue.Message{ID: "evt-1", Topic: "order.placed", Key: "customer-1", Payload: []byte(`{}`)}); err != nil {
+	k := cluster(t)
+	topic := k.topic("order.placed", 1)
+	b := k.broker(k.group("billing"))
+	if err := b.Publish(t.Context(), queue.Message{ID: "evt-1", Topic: topic, Key: "customer-1", Payload: []byte(`{}`)}); err != nil {
 		t.Fatal(err)
 	}
 
 	var calls atomic.Int32
-	second := make(chan queue.Message, 1)
+	handled := make(chan queue.Message, 2)
 	run := func(ctx context.Context, h queue.Handler) chan error {
 		done := make(chan error, 1)
-		go func() { done <- b.Subscribe(ctx, "order.placed", h) }()
+		go func() { done <- b.Subscribe(ctx, topic, h) }()
 		return done
 	}
 	ctx, cancel := context.WithCancel(t.Context())
@@ -97,61 +185,70 @@ func TestFailedMessageIsTriedAgainThenCommitted(t *testing.T) {
 		if calls.Add(1) == 1 {
 			return kakarot.E(kakarot.CodeUnavailable, "payment provider is down", errors.New("boom"))
 		}
-		second <- m
+		handled <- m
 		return nil
 	})
 	select {
-	case m := <-second:
+	case m := <-handled:
 		if m.Attempts != 1 || m.Key != "customer-1" || m.ID != "evt-1" {
 			t.Fatalf("got %+v", m)
 		}
-	case <-time.After(15 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("the message was not tried again")
 	}
-	time.Sleep(200 * time.Millisecond) // let the offset commit land
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
 
-	// The same group, restarted, does not see the handled message again.
+	// The same group, restarted, continues after the handled message: it
+	// receives the next one and not the first again.
+	if err := b.Publish(t.Context(), queue.Message{ID: "evt-2", Topic: topic, Payload: []byte(`{}`)}); err != nil {
+		t.Fatal(err)
+	}
 	ctx2, cancel2 := context.WithCancel(t.Context())
-	done2 := run(ctx2, func(context.Context, queue.Message) error {
-		calls.Add(1)
+	done2 := run(ctx2, func(_ context.Context, m queue.Message) error {
+		handled <- m
 		return nil
 	})
-	time.Sleep(time.Second)
+	select {
+	case m := <-handled:
+		if m.ID != "evt-2" {
+			t.Fatalf("after a restart the group received %s, want evt-2", m.ID)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the restarted group received nothing")
+	}
 	cancel2()
 	if err := <-done2; err != nil {
 		t.Fatal(err)
 	}
-	if n := calls.Load(); n != 2 {
-		t.Fatalf("handler ran %d times, want 2", n)
-	}
 }
 
 func TestMessageGoesToTheDeadLetterTopicAfterMaxDeliver(t *testing.T) {
-	addrs := cluster(t, "order.placed", "order.placed.dead")
-	b := broker(t, addrs, "billing")
+	k := cluster(t)
+	topic := k.topic("order.placed", 1)
+	k.create(topic+".dead", 1)
+	b := k.broker(k.group("billing"))
 	b.MaxDeliver, b.DeadLetter = 3, ".dead"
 
 	var calls atomic.Int32
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	go b.Subscribe(ctx, "order.placed", func(context.Context, queue.Message) error {
+	go b.Subscribe(ctx, topic, func(context.Context, queue.Message) error {
 		calls.Add(1)
 		return errors.New("always fails")
 	})
-	if err := b.Publish(t.Context(), queue.Message{ID: "evt-9", Topic: "order.placed", Payload: []byte(`{"order_id":"o-9"}`)}); err != nil {
+	if err := b.Publish(t.Context(), queue.Message{ID: "evt-9", Topic: topic, Payload: []byte(`{"order_id":"o-9"}`)}); err != nil {
 		t.Fatal(err)
 	}
 
-	cl, err := kgo.NewClient(kgo.SeedBrokers(addrs...), kgo.ConsumeTopics("order.placed.dead"), kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()))
+	cl, err := kgo.NewClient(kgo.SeedBrokers(k.addrs...), kgo.ConsumeTopics(topic+".dead"), kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer cl.Close()
-	pollCtx, stop := context.WithTimeout(t.Context(), 15*time.Second)
+	pollCtx, stop := context.WithTimeout(t.Context(), 30*time.Second)
 	defer stop()
 	recs := cl.PollFetches(pollCtx).Records()
 	if len(recs) != 1 || string(recs[0].Value) != `{"order_id":"o-9"}` {
@@ -169,11 +266,41 @@ func TestMessageGoesToTheDeadLetterTopicAfterMaxDeliver(t *testing.T) {
 	}
 }
 
+// On a cluster that creates topics on first use, which is Kafka's default,
+// neither the topic nor its dead-letter topic has to exist beforehand.
+func TestMissingTopicsAreCreatedOnFirstUse(t *testing.T) {
+	k := cluster(t)
+	topic := "order.placed.auto" + k.run
+	if k.run != "" {
+		t.Cleanup(func() { k.admin.DeleteTopics(context.Background(), topic, topic+".dead") })
+	}
+	b := k.broker(k.group("billing"))
+	b.MaxDeliver, b.DeadLetter = 2, ".dead"
+	if err := b.Publish(t.Context(), queue.Message{ID: "evt-1", Topic: topic, Payload: []byte(`{}`)}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go b.Subscribe(ctx, topic, func(context.Context, queue.Message) error { return errors.New("always fails") })
+
+	cl, err := kgo.NewClient(kgo.SeedBrokers(k.addrs...), kgo.ConsumeTopics(topic+".dead"), kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cl.Close()
+	pollCtx, stop := context.WithTimeout(t.Context(), 30*time.Second)
+	defer stop()
+	if recs := cl.PollFetches(pollCtx).Records(); len(recs) != 1 {
+		t.Fatalf("dead letter topic holds %d records, want 1", len(recs))
+	}
+}
+
 func TestGroupsEachReceiveEveryMessage(t *testing.T) {
-	addrs := cluster(t, "order.placed")
+	k := cluster(t)
+	orderPlaced := queue.Topic[placed](k.topic("order.placed", 3))
 	var billing, mail atomic.Int32
 	for group, n := range map[string]*atomic.Int32{"billing": &billing, "mail": &mail} {
-		c := &queue.Consumer{Service: group, Source: broker(t, addrs, group)}
+		c := &queue.Consumer{Service: group, Source: k.broker(k.group(group))}
 		queue.Handle(c, orderPlaced, "On", func(context.Context, placed) (kakarottest.None, error) {
 			n.Add(1)
 			return kakarottest.None{}, nil
@@ -181,10 +308,10 @@ func TestGroupsEachReceiveEveryMessage(t *testing.T) {
 		kakarottest.Serve(t, c)
 	}
 	m, _ := orderPlaced.Encode("k", placed{OrderID: "o-1"})
-	if err := broker(t, addrs, "").Publish(t.Context(), m); err != nil {
+	if err := k.broker("").Publish(t.Context(), m); err != nil {
 		t.Fatal(err)
 	}
-	kakarottest.Eventually(t, 15*time.Second, "both groups handled the message", func() bool {
+	kakarottest.Eventually(t, 30*time.Second, "both groups handled the message", func() bool {
 		return billing.Load() == 1 && mail.Load() == 1
 	})
 }

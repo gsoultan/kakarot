@@ -10,6 +10,11 @@
 // A topic is a Kafka topic and a message's Key is the record key, so
 // messages with one key stay in order. Delivery is at least once: an offset
 // is committed only after its handler returned.
+//
+// A topic that does not exist yet, including a dead-letter topic, is created
+// on first use when the cluster allows that (auto.create.topics.enable,
+// which is Kafka's default) with the cluster's default partition count.
+// Where it does not, create every topic beforehand.
 package kafkax
 
 import (
@@ -28,6 +33,8 @@ import (
 const (
 	idHeader    = "Kakarot-Id"
 	errorHeader = "Kakarot-Error"
+
+	commitTimeout = 10 * time.Second
 )
 
 // Broker publishes to and consumes from a Kafka cluster.
@@ -59,7 +66,10 @@ func (b *Broker) client(extra ...kgo.Opt) (*kgo.Client, error) {
 	if len(b.Brokers) == 0 {
 		return nil, errors.New("kafkax: Broker.Brokers is empty")
 	}
-	opts := append([]kgo.Opt{kgo.SeedBrokers(b.Brokers...)}, b.Options...)
+	// Ask the cluster to create a missing topic on first use, as Kafka's own
+	// clients do; a cluster with auto.create.topics.enable=false still
+	// refuses, and the topic must then be created beforehand.
+	opts := append([]kgo.Opt{kgo.SeedBrokers(b.Brokers...), kgo.AllowAutoTopicCreation()}, b.Options...)
 	return kgo.NewClient(append(opts, extra...)...)
 }
 
@@ -147,8 +157,8 @@ func (b *Broker) Subscribe(ctx context.Context, topic string, h queue.Handler) e
 				stopped = true
 				return
 			}
-			if err := cl.CommitRecords(ctx, r); err != nil && ctx.Err() == nil {
-				b.log().ErrorContext(ctx, "kafka commit failed", "topic", r.Topic, "partition", r.Partition, "offset", r.Offset, "err", err)
+			if err := b.commit(ctx, cl, r); err != nil {
+				b.log().ErrorContext(ctx, "kafka commit failed, the message will be delivered again", "topic", r.Topic, "partition", r.Partition, "offset", r.Offset, "err", err)
 			}
 		})
 		cl.AllowRebalance()
@@ -156,6 +166,15 @@ func (b *Broker) Subscribe(ctx context.Context, topic string, h queue.Handler) e
 			return nil
 		}
 	}
+}
+
+// commit commits r's offset. A handler that finished is acknowledged even
+// when ctx ended meanwhile, so a shutdown does not hand the message to the
+// next consumer again.
+func (b *Broker) commit(ctx context.Context, cl *kgo.Client, r *kgo.Record) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commitTimeout)
+	defer cancel()
+	return cl.CommitRecords(ctx, r)
 }
 
 // handle runs h on r until it succeeds or the message is given up on. It
