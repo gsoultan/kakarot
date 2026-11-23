@@ -7,7 +7,9 @@
 //
 // gen reads interfaces marked //kakarot:service [group] and writes
 // ../endpoint/endpoints_gen.go and, for methods marked //kakarot:http, the
-// HTTP bindings in ../transport/http_gen.go. Method shapes decide the kind:
+// HTTP bindings in ../transport/http_gen.go. Methods marked //kakarot:grpc
+// get ../transport/grpc_gen.go and the contract for clients in other
+// languages, ../api/<group>.proto. Method shapes decide the kind:
 //
 //	(ctx, Req) (Resp, error)                        Endpoint
 //	(ctx, Req) iter.Seq2[Msg, error]                ServerStream (SSE / NDJSON)

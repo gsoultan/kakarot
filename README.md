@@ -105,7 +105,7 @@ app.Run(ctx) // graceful shutdown on SIGINT/SIGTERM
 |---|---|
 | `//kakarot:service order` on the interface | `endpoint/endpoints_gen.go`: one typed endpoint per method |
 | `//kakarot:http GET /orders/{id}` | `transport/http_gen.go`: `RegisterOrderHTTP` |
-| `//kakarot:grpc` | `transport/grpc_gen.go`: `OrderGRPC`, `RegisterOrderGRPC` and `NewOrderGRPCClient` |
+| `//kakarot:grpc` | `transport/grpc_gen.go`: `OrderGRPC`, `RegisterOrderGRPC` and `NewOrderGRPCClient`; `api/order.proto` for clients in other languages |
 | `//kakarot:queue order.placed` | `transport/queue_gen.go`: a typed topic and `RegisterOrderQueue` |
 
 The method shape picks the kind:
@@ -236,7 +236,7 @@ get := kakarot.Wrap(op, client.GetOrder, middleware.Retry(policy)) // client-sid
 
 ```go
 grpcx.EnableProtobuf()                            // once in main
-schema, err := transport.OrderGRPC(eps).Proto()   // the contract: commit it as api/order.proto
+// go generate writes the contract to api/order.proto; kakarot check fails when it drifts
 ```
 
 ```proto
@@ -251,7 +251,7 @@ message Order {
 }
 ```
 
-One description of the Go types drives both the file and the wire format, so they cannot disagree. Field numbers follow the order of the struct's fields: add fields at the end, or pin a number with a `proto:"N"` tag. A string type with a `ProtoEnum` method is an `enum`, and pointer fields tagged `proto:",oneof=name"` are a `oneof`. `examples/orders` keeps the file under a test that fails when it drifts. The full type mapping is in [docs/protobuf.md](docs/protobuf.md).
+One description of the Go types drives both the file and the wire format, so they cannot disagree. Field numbers follow the order of the struct's fields: add fields at the end, or pin a number with a `proto:"N"` tag. A string type with a `ProtoEnum` method is an `enum`, and pointer fields tagged `proto:",oneof=name"` are a `oneof`. `kakarot gen` writes the file from `Service.Proto()`, the same function the server uses, and `kakarot check` reports it as out of date when the Go types change, so a change that would break clients shows up in review. The full type mapping is in [docs/protobuf.md](docs/protobuf.md).
 
 If you already have protoc output, use the **proto adapters** next to it:
 
@@ -438,5 +438,4 @@ Guides live in [`docs/`](docs/index.md): a step by step [tutorial](docs/tutorial
 ## Not built yet
 
 - Brokers other than NATS, Kafka and SQS (RabbitMQ, Google Pub/Sub): `queue.Subscriber` is one method.
-- `.proto` output from `kakarot gen`: the file comes from `Service.Proto()` at run time or in a test.
 - Dependency wiring generation: `main.go` is hand-written by design.

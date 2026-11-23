@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### `cmd/kakarot`
+
+- `kakarot gen` writes `api/<group>.proto` for every service with `//kakarot:grpc` methods, from the same `Service.Proto()` the server uses. `kakarot check` reports the file when it is out of date, like the generated Go code.
+- `examples/wallet` now commits `api/wallet.proto`; `examples/orders` drops its `.proto` test, which `kakarot check` replaces.
+
 ## v0.1.0
 
 The first release.

@@ -49,7 +49,7 @@ After changing a `service/service.go` or a `data/model` in an example, run `go g
 - Errors are `*kakarot.Error` with a `Code`. Create them with `kakarot.E`, `NotFound`, `Invalid` or `Conflict`, and compare with `kakarot.Is`. Internal causes are logged, never sent to a caller.
 - Shared middleware has the shape `func(ctx, op, next) error` and never sees the request. Middleware that needs the request is a `TypedMiddleware[Req, Resp]`.
 - Anything long-running implements `kakarot.Server` (`Serve`, `Shutdown`), and `Shutdown` is safe before `Serve` and safe to call twice.
-- Never edit `*_gen.go`, `*.gen.go` or `data/store/`. Change the source and regenerate. The generator's templates are in `cmd/kakarot/templates.go`; a change there means regenerating all three examples.
+- Never edit `*_gen.go`, `*.gen.go`, `api/*.proto` or `data/store/`. Change the source and regenerate. The generator's templates are in `cmd/kakarot/templates.go`; a change there means regenerating all three examples.
 - Every behaviour change comes with a test. Write the test first; it should fail for the reason you expect.
 - Every exported name has a doc comment that says what it does, in plain words.
 - When the CLI rejects something, the message says where (`file:line`), what is wrong, and what to write instead.

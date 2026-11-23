@@ -15,18 +15,20 @@ The server now answers each call in the encoding the client used. `EnableProtobu
 
 ## Write the file
 
-```go
-schema, err := transport.OrderGRPC(eps).Proto()
-```
-
-Keep the result in the repository, for example as `api/order.proto`, and guard it with a test. `examples/orders/proto_test.go` is the pattern:
+`kakarot gen` writes `api/<group>.proto` for every service with `//kakarot:grpc` methods, next to the generated Go code. The group is the one named in `//kakarot:service`, so `//kakarot:service order` gives `api/order.proto`. Two services in the same group get `api/<group>_<service>.proto` each.
 
 ```console
-$ go test ./...                                             # fails when the file is out of date
-$ UPDATE_PROTO=1 go test -run TestProtoFileIsCurrent .      # refresh it
+$ go generate ./...          # writes endpoint/, transport/ and api/order.proto
+$ go tool kakarot check      # fails when api/order.proto is out of date
 ```
 
-A change that would break existing clients then shows up as a diff of the `.proto` file in review. `Service.Descriptor()` returns the same schema as a `FileDescriptorProto` for tools that read descriptors.
+The file is the output of `Service.Proto()`, the function the server itself uses, so it always matches what the server answers. gen runs a small program in your module to call it, so the project must build and require `github.com/gsoultan/kakarot/transport/grpcx`. Commit the file. A change that would break existing clients then shows up as a diff of the `.proto` file in review, and `kakarot check` in CI catches a file nobody regenerated.
+
+To write the file yourself, for example from a service you build by hand, call `Proto` on it:
+
+```go
+schema, err := transport.OrderGRPC(eps).Proto()
+``` `Service.Descriptor()` returns the same schema as a `FileDescriptorProto` for tools that read descriptors.
 
 ## How Go types map
 
