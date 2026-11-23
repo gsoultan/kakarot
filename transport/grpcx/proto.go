@@ -70,6 +70,12 @@ func (protoCodec) Unmarshal(b []byte, v any) error {
 
 var enableProtobuf sync.Once
 
+// ProtoCodec returns the codec that EnableProtobuf installs. It encodes
+// generated protobuf messages as usual and plain Go values in the layout
+// Service.Proto writes. Other transports use it to speak the same protobuf
+// as grpcx: transport/connectx serves it to Connect and gRPC clients.
+func ProtoCodec() encoding.Codec { return protoCodec{} }
+
 // EnableProtobuf lets interface-first services answer clients that speak
 // protobuf, the default encoding of gRPC, besides JSON. Call it once in
 // main before serving.

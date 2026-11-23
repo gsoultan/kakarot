@@ -122,6 +122,31 @@ var _ data.Repo
 	}
 }
 
+func TestCheckKeepsConnectOutOfInnerLayers(t *testing.T) {
+	dir := project(t, map[string]string{
+		"domain/domain.go":   shopDomain,
+		"service/service.go": shopService,
+		"endpoint/rpc.go":    "package endpoint\n\nimport _ \"connectrpc.com/connect\"\n",
+		"usecase/get.go":     "package usecase\n\nimport _ \"github.com/gsoultan/kakarot/transport/connectx\"\n",
+	})
+	if err := generate(filepath.Join(dir, "service")); err != nil {
+		t.Fatal(err)
+	}
+	var err error
+	out := stderr(t, func() { err = check(dir) })
+	if err == nil {
+		t.Fatalf("check passed:\n%s", out)
+	}
+	for _, want := range []string{
+		"rpc.go:3: endpoint must not import connectrpc.com/connect",
+		"get.go:3: usecase must not import github.com/gsoultan/kakarot/transport/connectx",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+}
+
 func TestDirectiveMistakesAreExplained(t *testing.T) {
 	for doc, want := range map[string]string{
 		"kakarot:htp GET /x":     "unknown directive //kakarot:htp (did you mean //kakarot:http?)",

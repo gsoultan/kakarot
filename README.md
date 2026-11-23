@@ -30,6 +30,7 @@ The core has no dependencies outside the Go standard library. Anything that pull
 |---|---|---|
 | `github.com/gsoultan/kakarot` | core, `middleware`, `auth`, `queue`, `transport/httpx`, `kakarottest` | standard library only |
 | `github.com/gsoultan/kakarot/transport/grpcx` | gRPC: interface-first service and clients, `.proto` file and protobuf clients, proto adapters | grpc-go |
+| `github.com/gsoultan/kakarot/transport/connectx` | Connect RPC: one handler for Connect, gRPC and gRPC-Web, typed clients | connect-go, grpcx |
 | `github.com/gsoultan/kakarot/transport/wsx` | WebSocket streams | coder/websocket |
 | `github.com/gsoultan/kakarot/data` | storm `TxManager`, error mapping, `outbox`, `idempotency` | storm |
 | `github.com/gsoultan/kakarot/otelx` | OpenTelemetry tracing and metrics | opentelemetry-go |
@@ -260,6 +261,28 @@ s.getOrder = grpcx.Unary(op, eps.GetOrder, fromProto, toProto, mws...)
 // grpcx.ServerStream, ClientStream and Bidi adapt the generic grpc stream interfaces.
 ```
 
+## Connect RPC
+
+`transport/connectx` serves the same typed endpoints over [Connect](https://connectrpc.com) with connect-go. One `http.Handler` answers the Connect protocol, gRPC and gRPC-Web, so browsers, `curl`, connect-es and plain gRPC clients reach the same endpoints, on the same port as your HTTP routes.
+
+```go
+svc := connectx.NewService("order.v1.OrderService", mws...)
+connectx.AddUnary(svc, "GetOrder", eps.GetOrder)
+connectx.AddServerStream(svc, "ExportOrders", eps.ExportOrders) // AddClientStream, AddBidi too
+mux.Handle(svc.Handler(connect.WithInterceptors(connectx.Bearer(verify))))
+servers = append(servers, connectx.NewServer(":8080", mux)) // HTTP/1.1, HTTP/2 and h2c
+
+// client: a kakarot.Endpoint, so client-side middleware wraps it as usual
+get := connectx.Invoke[domain.GetOrder, domain.Order](http.DefaultClient, "https://orders.internal", "order.v1.OrderService", "GetOrder")
+order, err := get(connectx.WithBearer(ctx, token), domain.GetOrder{ID: id}) // err is a *kakarot.Error with the server's code
+```
+
+```console
+$ curl -H 'Content-Type: application/json' -d '{"id":"o-1"}' localhost:8080/order.v1.OrderService/GetOrder
+```
+
+Messages are your domain types as JSON, or as protobuf in the layout `svc.Proto()` writes, which is the file `grpcx` writes for the same methods: generate connect-es, connect-swift or gRPC clients from it. Clients send JSON over the Connect protocol by default; add `connectx.Protobuf()`, `connect.WithGRPC()` or `connect.WithGRPCWeb()` to change that. A client with `connect.WithGRPC()` also calls an interface-first `grpcx` server. Errors keep their kakarot code and fields, `grpcx.RegisterCode` applies to both transports, and `connectx.Carrier{Inject: otelx.Headers, Extract: otelx.WithHeaders}.Interceptor()` carries the trace. Bidirectional streams need HTTP/2.
+
 ## Queue consumers
 
 A message handler is an ordinary endpoint, so it gets the same middleware, validation and tests as an HTTP route.
@@ -425,7 +448,7 @@ kakarot.AsError(err).Code == CodeQuotaExceeded // true on the client
 Each module is tested on its own:
 
 ```console
-$ for m in . transport/grpcx transport/wsx data otelx cmd/kakarot; do (cd $m && go test -race ./...); done
+$ for m in . transport/grpcx transport/connectx transport/wsx data otelx cmd/kakarot; do (cd $m && go test -race ./...); done
 $ cd examples/orders && KAKAROT_TEST_DSN=postgres://user:pass@localhost:5432/orders go test -race ./...   # live storm tests
 $ cd examples/wallet && KAKAROT_TEST_DSN=postgres://user:pass@localhost:5432/wallet go test -race ./...   # use a separate database
 $ go run golang.org/x/vuln/cmd/govulncheck@latest ./...   # in any module
