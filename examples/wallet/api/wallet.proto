@@ -1,0 +1,81 @@
+// Written by kakarot from the Go service wallet.WalletService. Do not edit.
+// Field numbers follow the order of the Go struct fields: add new fields at
+// the end, or pin a number with a `proto:"N"` struct tag.
+
+syntax = "proto3";
+
+package wallet;
+
+import "google/protobuf/timestamp.proto";
+
+service WalletService {
+  rpc OpenAccount(OpenAccount) returns (Account);
+  rpc GetAccount(GetAccount) returns (Account);
+  rpc Deposit(Deposit) returns (Account);
+  rpc Transfer(Transfer) returns (TransferDone);
+  rpc ListEntries(ListEntries) returns (PageEntry);
+  rpc ImportDeposits(stream Deposit) returns (ImportResult);
+}
+
+message OpenAccount {}
+
+message Account {
+  string id = 1;
+  string owner = 2;
+  int64 balance = 3;
+  google.protobuf.Timestamp created_at = 4 [json_name = "created_at"];
+}
+
+message GetAccount {
+  string id = 1;
+}
+
+message Deposit {
+  string account_id = 1 [json_name = "account_id"];
+  int64 amount = 2;
+}
+
+message Transfer {
+  string from = 1;
+  string to = 2;
+  int64 amount = 3;
+  string idempotency_key = 4 [json_name = "idempotency_key"];
+}
+
+message TransferDone {
+  string id = 1;
+  string from = 2;
+  string to = 3;
+  int64 amount = 4;
+  int64 from_balance = 5 [json_name = "from_balance"];
+  google.protobuf.Timestamp at = 6;
+}
+
+message ListEntries {
+  string account_id = 1 [json_name = "account_id"];
+  PageRequest page_request = 2 [json_name = "PageRequest"];
+}
+
+message PageRequest {
+  string cursor = 1 [json_name = "Cursor"];
+  int64 limit = 2 [json_name = "Limit"];
+}
+
+message PageEntry {
+  repeated Entry items = 1;
+  string next = 2;
+}
+
+message Entry {
+  string id = 1;
+  string account_id = 2 [json_name = "account_id"];
+  string kind = 3;
+  int64 amount = 4;
+  string ref = 5;
+  google.protobuf.Timestamp created_at = 6 [json_name = "created_at"];
+}
+
+message ImportResult {
+  int64 deposits = 1;
+  int64 total = 2;
+}
